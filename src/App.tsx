@@ -273,6 +273,18 @@ export default function Game() {
     const space = BOARD_SPACES[nextPos];
     setLogs(prev => [`ROLLED ${move}! ARRIVED AT ${space.name.toUpperCase()}`, ...prev]);
 
+    // Optimistic Local Update for instant movement
+    const updatedPlayer = { 
+      ...currentPlayer, 
+      position: nextPos, 
+      balance: balance,
+      rolls_remaining: currentPlayer.rolls_remaining - 1,
+      last_roll_at: new Date().toISOString()
+    } as Player;
+    
+    setCurrentPlayer(updatedPlayer);
+    setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? updatedPlayer : p));
+
     const ownership = properties.find(p => p.space_id === nextPos);
     if (ownership && ownership.owner_id && ownership.owner_id !== currentPlayer.id) {
       const owner = players.find(p => p.id === ownership.owner_id);
@@ -351,27 +363,27 @@ export default function Game() {
       <div className="min-h-screen bg-[#fcfcf9] flex items-center justify-center p-4 font-sans text-gray-900 overflow-hidden">
         <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white p-10 rounded-sm shadow-[0_30px_60px_-15px_rgba(0,0,0,0.1)] w-full max-w-md border border-black/5 relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.2)]" />
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-20 h-20 bg-gray-50 border border-gray-100 rounded-full flex items-center justify-center mb-6">
-              <Landmark className="text-blue-600 w-10 h-10" />
+          <div className="flex flex-col items-center mb-10">
+            <div className="w-24 h-24 bg-gray-50 border border-black/[0.03] rounded-full flex items-center justify-center mb-8 shadow-inner">
+              <Plane className="text-blue-600 w-12 h-12" />
             </div>
-            <h1 className="text-4xl font-serif italic text-black tracking-widest text-center">GLOBAL TYCOON</h1>
-            <p className="text-[10px] uppercase tracking-[0.3em] opacity-40 text-center mt-3 font-black">Capital Allocation Protocol</p>
+            <h1 className="text-5xl font-serif italic text-black tracking-widest text-center">TYCOON</h1>
+            <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Strategic Flight Operations</p>
           </div>
-          <div className="space-y-6">
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest opacity-40 font-bold ml-1">Identity Signature</label>
-              <input type="text" placeholder="OPERATOR NAME" className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-sm text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+          <div className="space-y-8">
+            <div className="space-y-2">
+              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Operator Identifier</label>
+              <input type="text" placeholder="ENTER CALLSIGN" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
             </div>
             {errorMsg && (
-              <div className="p-4 bg-red-50 text-red-600 border border-red-100 rounded-sm text-[10px] font-mono leading-relaxed">
+              <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
                 <span className="font-bold uppercase block mb-1">Authorization Fault:</span>
                 {errorMsg}
               </div>
             )}
-            <button onClick={joinGame} disabled={!playerName} className="w-full py-5 bg-black text-white font-black text-sm uppercase tracking-widest rounded-sm shadow-xl hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Initialize Node</button>
+            <button onClick={joinGame} disabled={!playerName} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Initialize Node</button>
           </div>
-          <p className="mt-8 text-[9px] text-center opacity-30 uppercase tracking-tight">Connected via Supabase Realtime Flux</p>
+          <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Realtime Supabase Uplink: Active</p>
         </motion.div>
       </div>
     );
@@ -416,10 +428,10 @@ export default function Game() {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         {/* Game Area */}
-        <div className="flex-1 flex items-start md:items-center justify-center p-2 md:p-4 bg-gray-50/50 overflow-hidden relative">
-          <div className="relative aspect-square w-full max-w-[min(90vw,800px)] bg-white border border-black/[0.05] rounded-sm shadow-[0_20px_50px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.02]">
+        <div className="flex-1 flex items-center justify-center p-2 md:p-6 bg-gray-50/50 overflow-hidden relative">
+          <div className="relative aspect-square w-full max-w-[min(94vw,85vh,850px)] bg-white border border-black/[0.05] rounded-sm shadow-[0_30px_70px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.02]">
             <div className="grid grid-cols-11 grid-rows-11 h-full w-full">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
@@ -473,14 +485,18 @@ export default function Game() {
                       {players.filter(p => p.position === space.id).map(p => (
                         <motion.div 
                           key={p.id} 
-                          layoutId={`p-${p.id}`} 
-                          initial={{ scale: 0, rotate: -45 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          className="drop-shadow-md"
+                          layoutId={`player-plane-${p.id}`} 
+                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                          className="drop-shadow-lg z-30"
                         >
                           <Plane 
-                            className="w-4 h-4 md:w-6 md:h-6" 
-                            style={{ fill: p.player_color, stroke: 'white', strokeWidth: 1.5 }} 
+                            className="w-5 h-5 md:w-8 md:h-8" 
+                            style={{ 
+                              fill: p.player_color, 
+                              stroke: 'white', 
+                              strokeWidth: 2,
+                              filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.3))'
+                            }} 
                           />
                         </motion.div>
                       ))}
@@ -497,24 +513,24 @@ export default function Game() {
                 </div>
 
                 {currentPlayer && (
-                  <div className="relative">
-                    <div className="relative bg-white/90 backdrop-blur-md border border-black/5 p-4 md:p-10 rounded-xl flex flex-col items-center min-w-[240px] md:min-w-[360px] shadow-2xl shadow-black/10">
-                      <div className="text-[10px] md:text-xs uppercase tracking-[0.4em] font-black opacity-30 mb-6 md:mb-10">Terminal Dice Control</div>
+                  <div className="relative pointer-events-auto">
+                    <div className="relative bg-white/95 backdrop-blur-xl border border-black/5 p-5 md:p-12 rounded-3xl flex flex-col items-center min-w-[280px] md:min-w-[400px] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.03]">
+                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">Navigation Control</div>
                       
-                      <div className="flex gap-6 md:gap-10 mb-6 md:mb-10">
+                      <div className="flex gap-8 md:gap-12 mb-8 md:mb-14">
                          {[0, 1].map(idx => (
                            <motion.div 
                             key={idx}
                             animate={rolling ? { 
-                              rotate: [0, 90, 180, 270, 360], 
-                              scale: [1, 1.3, 0.9, 1.1, 1],
-                              x: rolling ? [0, 10, -10, 5, 0] : 0
+                              rotateY: [0, 180, 360, 540, 720],
+                              scale: [1, 1.4, 0.9, 1.2, 1],
+                              z: [0, 50, -50, 20, 0]
                             } : {}}
-                            transition={{ duration: 0.4, repeat: rolling ? Infinity : 0 }}
-                            className="w-16 h-16 md:w-24 md:h-24 bg-white border-2 border-black/10 rounded-2xl flex items-center justify-center shadow-xl relative overflow-hidden"
+                            transition={{ duration: 0.5, repeat: rolling ? Infinity : 0, ease: "easeInOut" }}
+                            className="w-20 h-20 md:w-32 md:h-32 bg-white border border-black/10 rounded-3xl flex items-center justify-center shadow-xl relative preserve-3d"
                            >
-                              <div className="absolute inset-0 bg-gradient-to-br from-white to-gray-100/50" />
-                              <span className="relative z-10 text-3xl md:text-6xl font-mono text-black font-black drop-shadow-sm">{diceVisual[idx]}</span>
+                              <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 rounded-3xl" />
+                              <span className="relative z-10 text-4xl md:text-7xl font-mono text-black font-black drop-shadow-md">{diceVisual[idx]}</span>
                            </motion.div>
                          ))}
                       </div>
@@ -522,22 +538,31 @@ export default function Game() {
                       <button 
                         onClick={rollDice} 
                         disabled={rolling || currentPlayer.rolls_remaining <= 0} 
-                        className="px-10 md:px-16 py-4 md:py-6 bg-blue-600 text-white font-black uppercase tracking-[0.3em] text-[11px] md:text-sm hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95"
+                        className="px-12 md:px-20 py-5 md:py-8 bg-blue-600 text-white font-black uppercase tracking-[0.4em] text-[12px] md:text-lg hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95 flex items-center justify-center gap-4"
                       >
-                        {rolling ? "CALCULATING..." : "ROLL THE DICE"}
+                        {rolling ? (
+                          <div className="flex gap-2">
+                             <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
+                             <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
+                             <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.4s]" />
+                          </div>
+                        ) : "PUNCH THE THROTTLE"}
                       </button>
 
-                      <div className="mt-6 md:mt-8 flex flex-col items-center gap-2">
-                        <div className="flex gap-2">
+                      <div className="mt-8 md:mt-12 flex flex-col items-center gap-3">
+                        <div className="flex gap-3">
                           {[...Array(5)].map((_, i) => (
                             <motion.div 
                               key={i} 
-                              animate={i < currentPlayer.rolls_remaining ? { scale: [1, 1.2, 1] } : {}}
-                              className={cn("w-3 h-3 rounded-full border border-black/5 shadow-sm", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-100")} 
+                              animate={i < currentPlayer.rolls_remaining ? { 
+                                scale: [1, 1.3, 1],
+                                opacity: 1
+                              } : { opacity: 0.2 }}
+                              className={cn("w-4 h-4 rounded-full border-2 border-white shadow-lg", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-200")} 
                             />
                           ))}
                         </div>
-                        <span className="text-[9px] font-black opacity-40 uppercase tracking-[0.2em]">{currentPlayer.rolls_remaining} MOVES LOADED</span>
+                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining} JUMP CHARGES LOADED</span>
                       </div>
                     </div>
                   </div>
