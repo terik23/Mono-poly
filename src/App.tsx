@@ -17,7 +17,10 @@ import {
   Send,
   Home,
   Landmark,
-  Timer
+  Timer,
+  Plane,
+  Menu,
+  X
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -61,6 +64,7 @@ export default function Game() {
   const [rolling, setRolling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1, 1]);
+  const [showSidebar, setShowSidebar] = useState(false);
 
   const fetchData = useCallback(async (gid: string) => {
     try {
@@ -389,6 +393,12 @@ export default function Game() {
           </div>
         </div>
         <div className="flex items-center space-x-4 md:space-x-8 italic font-serif">
+          <button 
+            onClick={() => setShowSidebar(!showSidebar)}
+            className="md:hidden p-2 bg-gray-50 border border-black/5 rounded-sm"
+          >
+            {showSidebar ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
           <div className="text-right hidden sm:block">
             <span className="block text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold mb-1">Sector Data</span>
             <span className="text-gray-600 text-sm">{BOARD_SPACES[currentPlayer?.position || 0].name}</span>
@@ -408,8 +418,8 @@ export default function Game() {
 
       <main className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Game Area */}
-        <div className="flex-1 flex items-center justify-center p-2 md:p-4 bg-gray-50/50 overflow-auto relative">
-          <div className="relative aspect-square w-full max-w-[800px] bg-white border border-black/[0.05] rounded-sm shadow-[0_20px_50px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.02]">
+        <div className="flex-1 flex items-start md:items-center justify-center p-2 md:p-4 bg-gray-50/50 overflow-hidden relative">
+          <div className="relative aspect-square w-full max-w-[min(90vw,800px)] bg-white border border-black/[0.05] rounded-sm shadow-[0_20px_50px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.02]">
             <div className="grid grid-cols-11 grid-rows-11 h-full w-full">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
@@ -459,14 +469,20 @@ export default function Game() {
                     )}
 
                     {/* Player Avatars */}
-                    <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-0.5 z-20 pointer-events-none">
+                    <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-1 z-20 pointer-events-none p-1">
                       {players.filter(p => p.position === space.id).map(p => (
                         <motion.div 
                           key={p.id} 
                           layoutId={`p-${p.id}`} 
-                          className="w-2.5 h-2.5 md:w-3.5 md:h-3.5 rounded-full ring-1 ring-white shadow-lg" 
-                          style={{ backgroundColor: p.player_color }} 
-                        />
+                          initial={{ scale: 0, rotate: -45 }}
+                          animate={{ scale: 1, rotate: 0 }}
+                          className="drop-shadow-md"
+                        >
+                          <Plane 
+                            className="w-4 h-4 md:w-6 md:h-6" 
+                            style={{ fill: p.player_color, stroke: 'white', strokeWidth: 1.5 }} 
+                          />
+                        </motion.div>
                       ))}
                     </div>
                   </div>
@@ -482,17 +498,23 @@ export default function Game() {
 
                 {currentPlayer && (
                   <div className="relative">
-                    <div className="relative bg-white/80 backdrop-blur-sm border border-black/5 p-6 md:p-12 rounded-[1px] flex flex-col items-center min-w-[200px] md:min-w-[320px] shadow-2xl shadow-black/5">
-                      <div className="text-[8px] md:text-[10px] uppercase tracking-[0.3em] font-black opacity-20 mb-4 md:mb-8">Pulse Generation</div>
+                    <div className="relative bg-white/90 backdrop-blur-md border border-black/5 p-4 md:p-10 rounded-xl flex flex-col items-center min-w-[240px] md:min-w-[360px] shadow-2xl shadow-black/10">
+                      <div className="text-[10px] md:text-xs uppercase tracking-[0.4em] font-black opacity-30 mb-6 md:mb-10">Terminal Dice Control</div>
                       
-                      <div className="flex gap-4 mb-4 md:mb-8">
+                      <div className="flex gap-6 md:gap-10 mb-6 md:mb-10">
                          {[0, 1].map(idx => (
                            <motion.div 
                             key={idx}
-                            animate={rolling ? { rotate: [0, 90, -90, 0], scale: [1, 1.2, 0.8, 1] } : {}}
-                            className="w-12 h-12 md:w-20 md:h-20 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-center shadow-inner"
+                            animate={rolling ? { 
+                              rotate: [0, 90, 180, 270, 360], 
+                              scale: [1, 1.3, 0.9, 1.1, 1],
+                              x: rolling ? [0, 10, -10, 5, 0] : 0
+                            } : {}}
+                            transition={{ duration: 0.4, repeat: rolling ? Infinity : 0 }}
+                            className="w-16 h-16 md:w-24 md:h-24 bg-white border-2 border-black/10 rounded-2xl flex items-center justify-center shadow-xl relative overflow-hidden"
                            >
-                              <span className="text-2xl md:text-5xl font-mono text-black font-black">{diceVisual[idx]}</span>
+                              <div className="absolute inset-0 bg-gradient-to-br from-white to-gray-100/50" />
+                              <span className="relative z-10 text-3xl md:text-6xl font-mono text-black font-black drop-shadow-sm">{diceVisual[idx]}</span>
                            </motion.div>
                          ))}
                       </div>
@@ -500,18 +522,22 @@ export default function Game() {
                       <button 
                         onClick={rollDice} 
                         disabled={rolling || currentPlayer.rolls_remaining <= 0} 
-                        className="px-8 md:px-14 py-3 md:py-5 bg-black text-white font-black uppercase tracking-[0.2em] text-[10px] md:text-xs hover:bg-blue-600 transition-all disabled:opacity-10 disabled:cursor-not-allowed rounded-[1px] w-full shadow-lg"
+                        className="px-10 md:px-16 py-4 md:py-6 bg-blue-600 text-white font-black uppercase tracking-[0.3em] text-[11px] md:text-sm hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95"
                       >
-                        {rolling ? "PROCESSING..." : "EXECUTE MOVE"}
+                        {rolling ? "CALCULATING..." : "ROLL THE DICE"}
                       </button>
 
-                      <div className="mt-4 md:mt-6 flex flex-col items-center gap-1">
-                        <div className="flex gap-1.5">
+                      <div className="mt-6 md:mt-8 flex flex-col items-center gap-2">
+                        <div className="flex gap-2">
                           {[...Array(5)].map((_, i) => (
-                            <div key={i} className={cn("w-2 h-2 rounded-full", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-200")} />
+                            <motion.div 
+                              key={i} 
+                              animate={i < currentPlayer.rolls_remaining ? { scale: [1, 1.2, 1] } : {}}
+                              className={cn("w-3 h-3 rounded-full border border-black/5 shadow-sm", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-100")} 
+                            />
                           ))}
                         </div>
-                        <span className="text-[8px] font-black opacity-30 uppercase tracking-widest">{currentPlayer.rolls_remaining} CHARGES AVAILABLE</span>
+                        <span className="text-[9px] font-black opacity-40 uppercase tracking-[0.2em]">{currentPlayer.rolls_remaining} MOVES LOADED</span>
                       </div>
                     </div>
                   </div>
@@ -522,7 +548,14 @@ export default function Game() {
         </div>
 
         {/* Sidebar Controls */}
-        <aside className="w-full md:w-[320px] lg:w-[400px] bg-white border-t md:border-t-0 md:border-l border-black/5 flex flex-col shadow-2xl p-4 md:p-10 shrink-0 overflow-hidden">
+        <aside className={cn(
+          "fixed inset-y-0 right-0 z-30 w-full md:w-[320px] lg:w-[400px] bg-white border-l border-black/5 flex flex-col shadow-2xl p-4 md:p-10 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:shadow-none",
+          showSidebar ? "translate-x-0" : "translate-x-full"
+        )}>
+          <div className="flex justify-between items-center md:hidden mb-6">
+             <span className="text-xs font-black uppercase tracking-widest opacity-30">Management Terminal</span>
+             <button onClick={() => setShowSidebar(false)}><X className="w-6 h-6" /></button>
+          </div>
           <div className="flex-1 flex flex-col gap-8 md:gap-12 overflow-y-auto custom-scrollbar">
             {/* Reserves & Context */}
             <div className="space-y-6">
@@ -550,30 +583,38 @@ export default function Game() {
 
             {/* Location Interaction */}
             {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
-              <div className="space-y-4">
-                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Asset Acquisition</div>
-                <div className="space-y-3">
-                  {!properties.find(p => p.space_id === currentPlayer.position) ? (
-                    <button 
-                      onClick={() => buyProperty(currentPlayer.position)} 
-                      disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
-                      className="w-full py-4 bg-white border border-black/10 text-black font-black uppercase text-xs tracking-widest hover:border-blue-600 hover:text-blue-600 transition-all disabled:opacity-20 rounded-[1px] shadow-sm flex items-center justify-center gap-2"
-                    >
-                      SECURE ASSET · ${BOARD_SPACES[currentPlayer.position].price}
-                    </button>
-                  ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
-                    <button 
-                      onClick={() => buildHouse(currentPlayer.position)} 
-                      disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
-                      className="w-full py-4 bg-blue-600 text-white font-black uppercase text-xs tracking-widest hover:bg-black transition-all disabled:opacity-20 rounded-[1px] shadow-lg flex items-center justify-center gap-2"
-                    >
-                      <Building2 className="w-4 h-4" /> UPGRADE INFRASTRUCTURE
-                    </button>
-                  ) : (
-                    <div className="p-4 bg-gray-50 border border-black/5 text-center text-[10px] uppercase tracking-widest opacity-20 font-black italic">
-                      Asset Managed by External Entity
-                    </div>
-                  )}
+              <div className="space-y-6">
+                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Strategic Asset Command</div>
+                <div className="p-5 bg-gray-50 border border-black/[0.03] rounded-xl space-y-4">
+                  <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-tight">
+                    <span className="opacity-40">Classification</span>
+                    <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{BOARD_SPACES[currentPlayer.position].color || 'Infrastructure'}</span>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {!properties.find(p => p.space_id === currentPlayer.position) ? (
+                      <button 
+                        onClick={() => buyProperty(currentPlayer.position)} 
+                        disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
+                        className="w-full py-5 bg-black text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-blue-600 transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
+                      >
+                        ACQUIRE · ${BOARD_SPACES[currentPlayer.position].price}
+                      </button>
+                    ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
+                      <button 
+                        onClick={() => buildHouse(currentPlayer.position)} 
+                        disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
+                        className="w-full py-5 bg-blue-600 text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-black transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
+                      >
+                        <Building2 className="w-5 h-5" /> UPGRADE (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
+                      </button>
+                    ) : (
+                      <div className="py-8 bg-white border border-gray-100 rounded-xl flex flex-col items-center justify-center gap-2">
+                        <Landmark className="w-8 h-8 opacity-10" />
+                        <span className="text-[10px] uppercase tracking-widest opacity-30 font-black italic">Consolidated Asset</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
