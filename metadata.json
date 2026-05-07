@@ -1,0 +1,6 @@
+{
+  "name": "Global Real-Life Monopoly",
+  "description": "A persistent multiplayer Monopoly game featuring real-world locations and a 30-minute roll cooldown.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
