@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabase';
 import { BOARD_SPACES } from './constants';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
 import { 
   Building2, 
   MapPin, 
@@ -152,10 +152,14 @@ export default function Game() {
       .channel(`game-${gameId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameId}` }, (payload) => {
         if (payload.eventType === 'UPDATE') {
-          setPlayers(prev => prev.map(p => p.id === payload.new.id ? payload.new as Player : p));
-          if (currentPlayer && payload.new.id === currentPlayer.id) {
-            setCurrentPlayer(payload.new as Player);
-          }
+          const updatedPlayer = payload.new as Player;
+          setPlayers(prev => prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p));
+          setCurrentPlayer(current => {
+            if (current && updatedPlayer.id === current.id) {
+              return updatedPlayer;
+            }
+            return current;
+          });
         } else if (payload.eventType === 'INSERT') {
           setPlayers(prev => [...prev.filter(p => p.id !== payload.new.id), payload.new as Player]);
         }
@@ -172,7 +176,7 @@ export default function Game() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [gameId, currentPlayer]);
+  }, [gameId]); // Removed currentPlayer dependency to avoid reconnection loops
 
   const joinGame = async () => {
     if (!playerName) return;
@@ -229,7 +233,8 @@ export default function Game() {
   const rollDice = async () => {
     if (!currentPlayer || rolling) return;
 
-    if (currentPlayer.rolls_remaining <= 0) {
+    const currentRolls = currentPlayer.rolls_remaining ?? 5;
+    if (currentRolls <= 0) {
       const nextRecharge = addMinutes(new Date(currentPlayer.last_recharge_at), 30);
       const timeRemaining = formatDistanceToNow(nextRecharge);
       setLogs(prev => [`0 ROLLS REMAINING. RECHARGE IN ${timeRemaining.toUpperCase()}`, ...prev]);
@@ -270,7 +275,7 @@ export default function Game() {
       ...currentPlayer, 
       position: nextPos, 
       balance: balance,
-      rolls_remaining: currentPlayer.rolls_remaining - 1,
+      rolls_remaining: Math.max(0, currentRolls - 1),
       last_roll_at: new Date().toISOString()
     } as Player;
     
@@ -297,7 +302,7 @@ export default function Game() {
         position: nextPos, 
         balance: balance,
         last_roll_at: new Date().toISOString(),
-        rolls_remaining: currentPlayer.rolls_remaining - 1,
+        rolls_remaining: Math.max(0, currentRolls - 1),
         last_daily_at: balance > currentPlayer.balance ? new Date().toISOString() : currentPlayer.last_daily_at
       })
       .eq('id', currentPlayer.id);
@@ -350,6 +355,31 @@ export default function Game() {
     setLogs(prev => [`Upgraded ${space.name} for $${houseCost}`, ...prev]);
   };
 
+  const sellProperty = async (spaceId: number) => {
+    if (!currentPlayer) return;
+    const ownership = properties.find(p => p.space_id === spaceId && p.owner_id === currentPlayer.id);
+    if (!ownership) return;
+
+    const space = BOARD_SPACES[spaceId];
+    const sellPrice = Math.floor((space.price || 0) / 2);
+
+    const { error: delError } = await supabase
+      .from('properties')
+      .delete()
+      .eq('space_id', spaceId)
+      .eq('game_id', gameId);
+
+    if (!delError) {
+      const newBalance = currentPlayer.balance + sellPrice;
+      await supabase
+        .from('players')
+        .update({ balance: newBalance })
+        .eq('id', currentPlayer.id);
+      
+      setLogs(prev => [`SOLD ${space.name.toUpperCase()} FOR $${sellPrice}`, ...prev]);
+    }
+  };
+
   if (!isJoined) {
     return (
       <div className="min-h-screen bg-[#fcfcf9] flex items-center justify-center p-4 font-sans text-gray-900 overflow-hidden">
@@ -357,10 +387,10 @@ export default function Game() {
           <div className="absolute top-0 left-0 w-full h-1 bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.2)]" />
           <div className="flex flex-col items-center mb-10">
             <div className="w-24 h-24 bg-gray-50 border border-black/[0.03] rounded-full flex items-center justify-center mb-8 shadow-inner">
-              <Plane className="text-blue-600 w-12 h-12" />
+              <Dice5 className="text-blue-600 w-12 h-12" />
             </div>
             <h1 className="text-5xl font-serif italic text-black tracking-widest text-center">TYCOON</h1>
-            <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Online Board Game</p>
+            <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Classic Board Game</p>
           </div>
           <div className="space-y-8">
             <div className="space-y-2">
@@ -422,9 +452,10 @@ export default function Game() {
 
       <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         {/* Game Area */}
-        <div className="flex-1 flex items-center justify-center p-2 md:p-6 bg-gray-50/50 overflow-hidden relative">
-          <div className="relative aspect-square w-full max-w-[min(94vw,85vh,850px)] bg-white border border-black/[0.05] rounded-sm shadow-[0_30px_70px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.02]">
-            <div className="grid grid-cols-11 grid-rows-11 h-full w-full">
+        <div className="flex-1 flex items-center justify-center p-2 md:p-6 bg-[#f0f0f0] overflow-hidden relative">
+          <LayoutGroup>
+            <div className="relative aspect-square w-full max-w-[min(96vw,90vh,950px)] bg-[#DAEED6] border-[12px] border-[#c1d9bc] rounded-xl shadow-[0_40px_100px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.05]">
+              <div className="grid grid-cols-11 grid-rows-11 h-full w-full p-1">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
                 let gridArea = "";
@@ -456,10 +487,10 @@ export default function Game() {
                     )}
                     
                     <div className="z-10 p-0.5 md:p-1 flex flex-col items-center justify-center h-full w-full text-center">
-                      <span className="text-[7px] md:text-[8px] font-black uppercase tracking-tighter text-gray-800 leading-tight">
+                      <span className="text-[8px] md:text-[10px] font-bold uppercase tracking-tight text-gray-900 leading-tight">
                         {space.name}
                       </span>
-                      {space.price && <span className="text-[6px] md:text-[8px] font-mono opacity-30 mt-auto">${space.price}</span>}
+                      {space.price && <span className="text-[7px] md:text-[9px] font-mono text-black/50 mt-auto font-bold">${space.price}</span>}
                     </div>
 
                     {ownership && ownership.buildings > 0 && (
@@ -472,26 +503,26 @@ export default function Game() {
                       <div className="absolute bottom-0 left-0 w-full h-0.5 md:h-1" style={{ backgroundColor: owner.player_color }} />
                     )}
 
-                    {/* Player Avatars */}
+                    {/* Player Tokens */}
                     <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-1 z-20 pointer-events-none p-1">
-                      {players.filter(p => p.position === space.id).map(p => (
-                        <motion.div 
-                          key={p.id} 
-                          layoutId={`player-plane-${p.id}`} 
-                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                          className="drop-shadow-lg z-30"
-                        >
-                          <Plane 
-                            className="w-5 h-5 md:w-8 md:h-8" 
-                            style={{ 
-                              fill: p.player_color, 
-                              stroke: 'white', 
-                              strokeWidth: 2,
-                              filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.3))'
-                            }} 
-                          />
-                        </motion.div>
-                      ))}
+                      <AnimatePresence>
+                        {players.filter(p => p.position === space.id).map(p => (
+                          <motion.div 
+                            key={p.id} 
+                            layoutId={`player-token-${p.id}`} 
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            exit={{ scale: 0 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                            className="z-30"
+                          >
+                            <div 
+                              className="w-5 h-5 md:w-8 md:h-8 rounded-full border-2 border-white shadow-lg ring-1 ring-black/10" 
+                              style={{ backgroundColor: p.player_color }} 
+                            />
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
                     </div>
                   </div>
                 );
@@ -500,14 +531,14 @@ export default function Game() {
               {/* Center Dashboard */}
               <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-center p-4">
                 <div className="text-center mb-8 md:mb-12">
-                   <h1 className="text-[4vw] lg:text-[4.5rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none mb-1 md:mb-4 select-none">TYCOON</h1>
-                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.5em] opacity-40 font-black italic">Economic Strategy</p>
+                   <h1 className="text-[5vw] lg:text-[5rem] font-serif italic text-black/[0.05] tracking-[0.1em] leading-none mb-1 md:mb-4 select-none">TYCOON</h1>
+                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.6em] opacity-30 font-black italic">Classic Edition</p>
                 </div>
 
                 {currentPlayer && (
                   <div className="relative pointer-events-auto">
                     <div className="relative bg-white/95 backdrop-blur-xl border border-black/5 p-5 md:p-12 rounded-3xl flex flex-col items-center min-w-[280px] md:min-w-[400px] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.03]">
-                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">Action Panel</div>
+                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">YOUR TURN</div>
                       
                       <div className="flex gap-8 md:gap-12 mb-8 md:mb-14">
                          <motion.div 
@@ -543,15 +574,15 @@ export default function Game() {
                           {[...Array(5)].map((_, i) => (
                             <motion.div 
                               key={i} 
-                              animate={i < currentPlayer.rolls_remaining ? { 
+                              animate={i < (currentPlayer.rolls_remaining ?? 5) ? { 
                                 scale: [1, 1.3, 1],
                                 opacity: 1
                               } : { opacity: 0.2 }}
-                              className={cn("w-4 h-4 rounded-full border-2 border-white shadow-lg", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-200")} 
+                              className={cn("w-4 h-4 rounded-full border-2 border-white shadow-lg", i < (currentPlayer.rolls_remaining ?? 5) ? "bg-blue-600" : "bg-gray-200")} 
                             />
                           ))}
                         </div>
-                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining} ROLLS LEFT</span>
+                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining ?? 5} ROLLS LEFT</span>
                       </div>
                     </div>
                   </div>
@@ -559,6 +590,7 @@ export default function Game() {
               </div>
             </div>
           </div>
+        </LayoutGroup>
         </div>
 
         {/* Sidebar Controls */}
@@ -637,7 +669,7 @@ export default function Game() {
             {currentPlayer && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">My Properties</div>
+                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">MY PROPERTIES</div>
                   <div className="text-[9px] font-mono font-bold opacity-30">
                     {properties.filter(p => p.owner_id === currentPlayer.id).length} PROPERTIES
                   </div>
@@ -646,20 +678,30 @@ export default function Game() {
                   {properties.filter(p => p.owner_id === currentPlayer.id).map(prop => {
                     const space = BOARD_SPACES[prop.space_id];
                     return (
-                      <div key={prop.space_id} className="flex items-center justify-between p-3 bg-white border border-black/[0.03] rounded-xl hover:border-blue-600/30 transition-all group">
+                      <div key={prop.space_id} className="flex items-center justify-between p-3 bg-white border border-black/[0.03] rounded-xl hover:border-blue-600/30 transition-all group relative overflow-hidden">
                         <div className="flex items-center gap-3">
-                          <div className="w-1.5 h-6 rounded-full" style={{ backgroundColor: space.color || '#cbd5e1' }} />
+                          <div className="w-2 h-8 rounded-full" style={{ backgroundColor: space.color || '#cbd5e1' }} />
                           <div className="flex flex-col">
                             <span className="text-[10px] font-black uppercase tracking-tight text-gray-800">{space.name}</span>
                             <div className="flex gap-1 mt-0.5">
                               {[...Array(prop.buildings)].map((_, i) => (
-                                <div key={i} className="w-1.5 h-1.5 bg-blue-600 rounded-full" />
+                                <div key={i} className="w-1.5 h-1.5 bg-green-600 rounded-full" />
                               ))}
                             </div>
                           </div>
                         </div>
-                        <div className="text-[9px] font-mono font-bold opacity-30">
-                          ${space.price}
+                        <div className="flex items-center gap-3">
+                          <div className="text-[9px] font-mono font-bold opacity-30 text-right">
+                            VAL: ${space.price}<br/>
+                            SELL: ${Math.floor((space.price || 0) / 2)}
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); sellProperty(prop.space_id); }}
+                            className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors md:opacity-0 group-hover:opacity-100"
+                            title="Sell Property"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -676,7 +718,7 @@ export default function Game() {
             {/* leaderboard */}
             <div className="flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
-                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Leaderboard</div>
+                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Scoreboard</div>
                  <div className="text-[10px] font-black text-blue-600/50">{players.length} PLAYER(S)</div>
               </div>
               <div className="space-y-2 pb-4">
