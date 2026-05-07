@@ -63,7 +63,7 @@ export default function Game() {
   const [logs, setLogs] = useState<string[]>([]);
   const [rolling, setRolling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [diceVisual, setDiceVisual] = useState([1, 1]);
+  const [diceVisual, setDiceVisual] = useState([1]);
   const [showSidebar, setShowSidebar] = useState(false);
 
   const fetchData = useCallback(async (gid: string) => {
@@ -151,28 +151,21 @@ export default function Game() {
     const channel = supabase
       .channel(`game-${gameId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameId}` }, (payload) => {
-        setPlayers(prev => {
-          if (payload.eventType === 'INSERT') {
-            const exists = prev.some(p => p.id === payload.new.id);
-            if (exists) return prev;
-            return [...prev, payload.new as Player];
+        if (payload.eventType === 'UPDATE') {
+          setPlayers(prev => prev.map(p => p.id === payload.new.id ? payload.new as Player : p));
+          if (currentPlayer && payload.new.id === currentPlayer.id) {
+            setCurrentPlayer(payload.new as Player);
           }
-          if (payload.eventType === 'UPDATE') {
-            const updated = prev.map(p => p.id === payload.new.id ? payload.new as Player : p);
-            if (currentPlayer && payload.new.id === currentPlayer.id) {
-              setCurrentPlayer(payload.new as Player);
-            }
-            return updated;
-          }
-          return prev;
-        });
+        } else if (payload.eventType === 'INSERT') {
+          setPlayers(prev => [...prev.filter(p => p.id !== payload.new.id), payload.new as Player]);
+        }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'properties', filter: `game_id=eq.${gameId}` }, (payload) => {
-        setProperties(prev => {
-          if (payload.eventType === 'INSERT') return [...prev, payload.new as PropertyOwnership];
-          if (payload.eventType === 'UPDATE') return prev.map(p => p.space_id === payload.new.space_id ? payload.new as PropertyOwnership : p);
-          return prev;
-        });
+        if (payload.eventType === 'INSERT') {
+          setProperties(prev => [...prev.filter(p => p.space_id !== payload.new.space_id), payload.new as PropertyOwnership]);
+        } else if (payload.eventType === 'UPDATE') {
+          setProperties(prev => prev.map(p => p.space_id === payload.new.space_id ? payload.new as PropertyOwnership : p));
+        }
       })
       .subscribe();
 
@@ -247,14 +240,13 @@ export default function Game() {
     
     // Dice animation shuffle
     for(let i = 0; i < 10; i++) {
-      setDiceVisual([Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1]);
+      setDiceVisual([Math.floor(Math.random() * 6) + 1]);
       await new Promise(r => setTimeout(r, 60));
     }
 
     const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    setDiceVisual([d1, d2]);
-    const move = d1 + d2;
+    setDiceVisual([d1]);
+    const move = d1;
     
     let nextPos = (currentPlayer.position + move) % 40;
     let balance = currentPlayer.balance;
@@ -368,22 +360,22 @@ export default function Game() {
               <Plane className="text-blue-600 w-12 h-12" />
             </div>
             <h1 className="text-5xl font-serif italic text-black tracking-widest text-center">TYCOON</h1>
-            <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Strategic Flight Operations</p>
+            <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Online Board Game</p>
           </div>
           <div className="space-y-8">
             <div className="space-y-2">
-              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Operator Identifier</label>
-              <input type="text" placeholder="ENTER CALLSIGN" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Your Name</label>
+              <input type="text" placeholder="NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
             </div>
             {errorMsg && (
               <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
-                <span className="font-bold uppercase block mb-1">Authorization Fault:</span>
+                <span className="font-bold uppercase block mb-1">Error:</span>
                 {errorMsg}
               </div>
             )}
-            <button onClick={joinGame} disabled={!playerName} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Initialize Node</button>
+            <button onClick={joinGame} disabled={!playerName} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Start Game</button>
           </div>
-          <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Realtime Supabase Uplink: Active</p>
+          <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Syncing: Online</p>
         </motion.div>
       </div>
     );
@@ -396,11 +388,11 @@ export default function Game() {
         <div className="flex items-center space-x-4 md:space-x-6">
           <div className="flex items-center space-x-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse shadow-[0_0_8px_rgba(37,99,235,0.4)]"></div>
-            <span className="text-[9px] font-bold tracking-widest uppercase opacity-70 font-mono hidden sm:inline">Genesis Node: Active</span>
+            <span className="text-[9px] font-bold tracking-widest uppercase opacity-70 font-mono hidden sm:inline">Online</span>
           </div>
           <div className="h-8 w-[1px] bg-black/5 hidden sm:block"></div>
           <div className="flex flex-col">
-            <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Reserves</span>
+            <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Balance</span>
             <span className="text-lg md:text-xl font-mono text-blue-700 font-bold leading-none">${currentPlayer?.balance.toLocaleString()}</span>
           </div>
         </div>
@@ -412,13 +404,13 @@ export default function Game() {
             {showSidebar ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="text-right hidden sm:block">
-            <span className="block text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold mb-1">Sector Data</span>
+            <span className="block text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold mb-1">Location</span>
             <span className="text-gray-600 text-sm">{BOARD_SPACES[currentPlayer?.position || 0].name}</span>
           </div>
           <div className="w-[1px] h-8 bg-black/5 hidden sm:block"></div>
           <div className="flex items-center gap-3">
              <div className="flex flex-col text-right">
-                <span className="text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold">Operator</span>
+                <span className="text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold">Player</span>
                 <span className="text-black text-[10px] md:text-xs font-bold font-sans uppercase tracking-tight">{currentPlayer?.name}</span>
              </div>
              <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
@@ -508,31 +500,28 @@ export default function Game() {
               {/* Center Dashboard */}
               <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-center p-4">
                 <div className="text-center mb-8 md:mb-12">
-                   <h1 className="text-[4vw] lg:text-[4.5rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none mb-1 md:mb-4 select-none">TYCOON GLOBAL</h1>
-                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.5em] opacity-40 font-black italic">Macro-Asset Exchange</p>
+                   <h1 className="text-[4vw] lg:text-[4.5rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none mb-1 md:mb-4 select-none">TYCOON</h1>
+                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.5em] opacity-40 font-black italic">Economic Strategy</p>
                 </div>
 
                 {currentPlayer && (
                   <div className="relative pointer-events-auto">
                     <div className="relative bg-white/95 backdrop-blur-xl border border-black/5 p-5 md:p-12 rounded-3xl flex flex-col items-center min-w-[280px] md:min-w-[400px] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.03]">
-                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">Navigation Control</div>
+                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">Action Panel</div>
                       
                       <div className="flex gap-8 md:gap-12 mb-8 md:mb-14">
-                         {[0, 1].map(idx => (
-                           <motion.div 
-                            key={idx}
-                            animate={rolling ? { 
-                              rotateY: [0, 180, 360, 540, 720],
-                              scale: [1, 1.4, 0.9, 1.2, 1],
-                              z: [0, 50, -50, 20, 0]
-                            } : {}}
-                            transition={{ duration: 0.5, repeat: rolling ? Infinity : 0, ease: "easeInOut" }}
-                            className="w-20 h-20 md:w-32 md:h-32 bg-white border border-black/10 rounded-3xl flex items-center justify-center shadow-xl relative preserve-3d"
-                           >
-                              <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 rounded-3xl" />
-                              <span className="relative z-10 text-4xl md:text-7xl font-mono text-black font-black drop-shadow-md">{diceVisual[idx]}</span>
-                           </motion.div>
-                         ))}
+                         <motion.div 
+                          animate={rolling ? { 
+                            rotateY: [0, 180, 360, 540, 720],
+                            scale: [1, 1.4, 0.9, 1.2, 1],
+                            z: [0, 50, -50, 20, 0]
+                          } : {}}
+                          transition={{ duration: 0.5, repeat: rolling ? Infinity : 0, ease: "easeInOut" }}
+                          className="w-24 h-24 md:w-40 md:h-40 bg-white border border-black/10 rounded-3xl flex items-center justify-center shadow-xl relative preserve-3d"
+                         >
+                            <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 rounded-3xl" />
+                            <span className="relative z-10 text-5xl md:text-8xl font-mono text-black font-black drop-shadow-md">{diceVisual[0]}</span>
+                         </motion.div>
                       </div>
 
                       <button 
@@ -546,7 +535,7 @@ export default function Game() {
                              <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
                              <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.4s]" />
                           </div>
-                        ) : "PUNCH THE THROTTLE"}
+                        ) : "ROLL DICE"}
                       </button>
 
                       <div className="mt-8 md:mt-12 flex flex-col items-center gap-3">
@@ -562,7 +551,7 @@ export default function Game() {
                             />
                           ))}
                         </div>
-                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining} JUMP CHARGES LOADED</span>
+                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining} ROLLS LEFT</span>
                       </div>
                     </div>
                   </div>
@@ -578,25 +567,25 @@ export default function Game() {
           showSidebar ? "translate-x-0" : "translate-x-full"
         )}>
           <div className="flex justify-between items-center md:hidden mb-6">
-             <span className="text-xs font-black uppercase tracking-widest opacity-30">Management Terminal</span>
+             <span className="text-xs font-black uppercase tracking-widest opacity-30">Game Menu</span>
              <button onClick={() => setShowSidebar(false)}><X className="w-6 h-6" /></button>
           </div>
           <div className="flex-1 flex flex-col gap-8 md:gap-12 overflow-y-auto custom-scrollbar">
             {/* Reserves & Context */}
             <div className="space-y-6">
                <div className="flex justify-between items-end border-b border-black/5 pb-2">
-                 <span className="text-[10px] uppercase tracking-widest font-black opacity-20">Sector Context</span>
+                 <span className="text-[10px] uppercase tracking-widest font-black opacity-20">Location Info</span>
                  <span className="text-xs font-serif italic text-gray-600">{BOARD_SPACES[currentPlayer?.position || 0].name} ({BOARD_SPACES[currentPlayer?.position || 0].type})</span>
                </div>
                
                <div className="bg-gray-50/80 border border-black/[0.03] p-6 rounded-[1px] relative">
                  <div className="flex flex-col gap-1">
-                   <span className="text-[8px] uppercase tracking-widest opacity-40 font-black">Capital Liquidity</span>
+                   <span className="text-[8px] uppercase tracking-widest opacity-40 font-black">Cash Balance</span>
                    <span className="text-4xl font-mono text-black font-black tracking-tight">${currentPlayer?.balance.toLocaleString()}</span>
                  </div>
                  <div className="mt-4 flex flex-col gap-1.5">
                     <div className="flex justify-between items-center text-[9px] uppercase font-black opacity-30 tracking-widest">
-                       <span>Dividend Progress</span>
+                       <span>Daily Bonus</span>
                        <span>Daily</span>
                     </div>
                     <div className="w-full h-0.5 bg-gray-200 rounded-full overflow-hidden">
@@ -609,10 +598,10 @@ export default function Game() {
             {/* Location Interaction */}
             {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
               <div className="space-y-6">
-                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Strategic Asset Command</div>
+                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Property Actions</div>
                 <div className="p-5 bg-gray-50 border border-black/[0.03] rounded-xl space-y-4">
                   <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-tight">
-                    <span className="opacity-40">Classification</span>
+                    <span className="opacity-40">Group</span>
                     <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{BOARD_SPACES[currentPlayer.position].color || 'Infrastructure'}</span>
                   </div>
                   
@@ -623,7 +612,7 @@ export default function Game() {
                         disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
                         className="w-full py-5 bg-black text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-blue-600 transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
                       >
-                        ACQUIRE · ${BOARD_SPACES[currentPlayer.position].price}
+                        BUY · ${BOARD_SPACES[currentPlayer.position].price}
                       </button>
                     ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
                       <button 
@@ -631,12 +620,12 @@ export default function Game() {
                         disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
                         className="w-full py-5 bg-blue-600 text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-black transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
                       >
-                        <Building2 className="w-5 h-5" /> UPGRADE (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
+                        <Building2 className="w-5 h-5" /> BUILD (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
                       </button>
                     ) : (
                       <div className="py-8 bg-white border border-gray-100 rounded-xl flex flex-col items-center justify-center gap-2">
                         <Landmark className="w-8 h-8 opacity-10" />
-                        <span className="text-[10px] uppercase tracking-widest opacity-30 font-black italic">Consolidated Asset</span>
+                        <span className="text-[10px] uppercase tracking-widest opacity-30 font-black italic">Owned by someone else</span>
                       </div>
                     )}
                   </div>
@@ -644,11 +633,51 @@ export default function Game() {
               </div>
             )}
 
+            {/* Asset Portfolio */}
+            {currentPlayer && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">My Properties</div>
+                  <div className="text-[9px] font-mono font-bold opacity-30">
+                    {properties.filter(p => p.owner_id === currentPlayer.id).length} PROPERTIES
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {properties.filter(p => p.owner_id === currentPlayer.id).map(prop => {
+                    const space = BOARD_SPACES[prop.space_id];
+                    return (
+                      <div key={prop.space_id} className="flex items-center justify-between p-3 bg-white border border-black/[0.03] rounded-xl hover:border-blue-600/30 transition-all group">
+                        <div className="flex items-center gap-3">
+                          <div className="w-1.5 h-6 rounded-full" style={{ backgroundColor: space.color || '#cbd5e1' }} />
+                          <div className="flex flex-col">
+                            <span className="text-[10px] font-black uppercase tracking-tight text-gray-800">{space.name}</span>
+                            <div className="flex gap-1 mt-0.5">
+                              {[...Array(prop.buildings)].map((_, i) => (
+                                <div key={i} className="w-1.5 h-1.5 bg-blue-600 rounded-full" />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[9px] font-mono font-bold opacity-30">
+                          ${space.price}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {properties.filter(p => p.owner_id === currentPlayer.id).length === 0 && (
+                    <div className="py-6 border-2 border-dashed border-black/[0.03] rounded-xl flex items-center justify-center">
+                      <span className="text-[9px] uppercase tracking-[0.2em] font-black opacity-10 italic">No properties yet</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* leaderboard */}
             <div className="flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
-                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Consolidated Rankings</div>
-                 <div className="text-[10px] font-black text-blue-600/50">{players.length} NODE(S)</div>
+                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Leaderboard</div>
+                 <div className="text-[10px] font-black text-blue-600/50">{players.length} PLAYER(S)</div>
               </div>
               <div className="space-y-2 pb-4">
                 {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
@@ -674,7 +703,7 @@ export default function Game() {
       <footer className="h-10 bg-white border-t border-black/5 flex items-center px-6 overflow-hidden shrink-0">
         <div className="text-[9px] uppercase tracking-widest text-blue-600 shrink-0 mr-8 font-black flex items-center gap-2 bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
           <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-ping" />
-          Global Feed
+          Recent Events
         </div>
         <div className="flex items-center space-x-16 text-[10px] opacity-40 animate-marquee whitespace-nowrap font-mono uppercase tracking-tighter">
           {logs.length > 0 ? (
@@ -683,7 +712,7 @@ export default function Game() {
               {logs.map((log, i) => <span key={`log-clone-${i}`} className="flex items-center gap-2"><span className="text-blue-600 font-black">#</span> {log}</span>)}
             </>
           ) : (
-            <span>Synchronizing worldview... Preparing strategic vectors... Calibrating market indices...</span>
+            <span>Waiting for game events... Buying and selling properties...</span>
           )}
         </div>
       </footer>
