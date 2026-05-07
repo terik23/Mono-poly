@@ -36,6 +36,8 @@ interface Player {
   last_roll_at: string | null;
   last_daily_at: string;
   player_color: string;
+  rolls_remaining: number; // New: Add to your Supabase table
+  last_recharge_at: string; // New: Add to your Supabase table
 }
 
 interface PropertyOwnership {
@@ -45,7 +47,7 @@ interface PropertyOwnership {
 }
 
 const PLAYER_COLORS = [
-  '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'
+  '#dc2626', '#2563eb', '#16a34a', '#d97706', '#7c3aed', '#db2777', '#0891b2'
 ];
 
 export default function Game() {
@@ -58,6 +60,7 @@ export default function Game() {
   const [logs, setLogs] = useState<string[]>([]);
   const [rolling, setRolling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [diceVisual, setDiceVisual] = useState([1, 1]);
 
   const fetchData = useCallback(async (gid: string) => {
     try {
@@ -78,9 +81,35 @@ export default function Game() {
       if (propData) setProperties(propData);
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
-      setErrorMsg(`Data Error: ${e.message || 'Check if "players" and "properties" tables exist.'}`);
+      setErrorMsg(`Data Synchronization Error: ${e.message}`);
     }
   }, []);
+
+  const rechargeRolls = useCallback(async (player: Player) => {
+    const lastRecharge = new Date(player.last_recharge_at);
+    const now = new Date();
+    const diffMs = now.getTime() - lastRecharge.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+
+    if (diffMins >= 30 && player.rolls_remaining < 5) {
+      const { data } = await supabase
+        .from('players')
+        .update({ 
+          rolls_remaining: 5, 
+          last_recharge_at: now.toISOString() 
+        })
+        .eq('id', player.id)
+        .select()
+        .single();
+      if (data) setCurrentPlayer(data);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentPlayer) {
+      rechargeRolls(currentPlayer);
+    }
+  }, [currentPlayer, rechargeRolls]);
 
   // Sync logs to Supabase Storage "Server" bucket
   const syncLogsToStorage = useCallback(async (newLogs: string[]) => {
@@ -119,7 +148,11 @@ export default function Game() {
       .channel(`game-${gameId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameId}` }, (payload) => {
         setPlayers(prev => {
-          if (payload.eventType === 'INSERT') return [...prev, payload.new as Player];
+          if (payload.eventType === 'INSERT') {
+            const exists = prev.some(p => p.id === payload.new.id);
+            if (exists) return prev;
+            return [...prev, payload.new as Player];
+          }
           if (payload.eventType === 'UPDATE') {
             const updated = prev.map(p => p.id === payload.new.id ? payload.new as Player : p);
             if (currentPlayer && payload.new.id === currentPlayer.id) {
@@ -171,7 +204,9 @@ export default function Game() {
         balance: 1500,
         position: 0,
         player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
-        last_daily_at: new Date().toISOString()
+        last_daily_at: new Date().toISOString(),
+        rolls_remaining: 5,
+        last_recharge_at: new Date().toISOString()
       };
 
       const { data, error: insertError } = await supabase
@@ -197,18 +232,24 @@ export default function Game() {
   const rollDice = async () => {
     if (!currentPlayer || rolling) return;
 
-    if (currentPlayer.last_roll_at) {
-      const nextRoll = addMinutes(new Date(currentPlayer.last_roll_at), 30);
-      if (isAfter(nextRoll, new Date())) {
-        const timeRemaining = formatDistanceToNow(nextRoll);
-        setLogs(prev => [`Wait ${timeRemaining} to roll!`, ...prev]);
-        return;
-      }
+    if (currentPlayer.rolls_remaining <= 0) {
+      const nextRecharge = addMinutes(new Date(currentPlayer.last_recharge_at), 30);
+      const timeRemaining = formatDistanceToNow(nextRecharge);
+      setLogs(prev => [`0 ROLLS REMAINING. RECHARGE IN ${timeRemaining.toUpperCase()}`, ...prev]);
+      return;
     }
 
     setRolling(true);
+    
+    // Dice animation shuffle
+    for(let i = 0; i < 10; i++) {
+      setDiceVisual([Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1]);
+      await new Promise(r => setTimeout(r, 60));
+    }
+
     const d1 = Math.floor(Math.random() * 6) + 1;
     const d2 = Math.floor(Math.random() * 6) + 1;
+    setDiceVisual([d1, d2]);
     const move = d1 + d2;
     
     let nextPos = (currentPlayer.position + move) % 40;
@@ -217,16 +258,16 @@ export default function Game() {
     const lastDaily = new Date(currentPlayer.last_daily_at);
     if (new Date().getTime() - lastDaily.getTime() > 24 * 60 * 60 * 1000) {
       balance += 100;
-      setLogs(prev => [`Daily $100 bonus collected!`, ...prev]);
+      setLogs(prev => [`DAILY DIVIDEND $100 GRANTED`, ...prev]);
     }
 
     if (nextPos < currentPlayer.position) {
       balance += 200;
-      setLogs(prev => [`Passed GO! Collected $200`, ...prev]);
+      setLogs(prev => [`PASSED GO! ACQUIRED $200`, ...prev]);
     }
 
     const space = BOARD_SPACES[nextPos];
-    setLogs(prev => [`Rolled ${move}! Landed on ${space.name}`, ...prev]);
+    setLogs(prev => [`ROLLED ${move}! ARRIVED AT ${space.name.toUpperCase()}`, ...prev]);
 
     const ownership = properties.find(p => p.space_id === nextPos);
     if (ownership && ownership.owner_id && ownership.owner_id !== currentPlayer.id) {
@@ -238,7 +279,7 @@ export default function Game() {
           .from('players')
           .update({ balance: owner.balance + rent })
           .eq('id', owner.id);
-        setLogs(prev => [`Paid $${rent} rent to ${owner.name}`, ...prev]);
+        setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
       }
     }
 
@@ -248,6 +289,7 @@ export default function Game() {
         position: nextPos, 
         balance: balance,
         last_roll_at: new Date().toISOString(),
+        rolls_remaining: currentPlayer.rolls_remaining - 1,
         last_daily_at: balance > currentPlayer.balance ? new Date().toISOString() : currentPlayer.last_daily_at
       })
       .eq('id', currentPlayer.id);
@@ -302,72 +344,72 @@ export default function Game() {
 
   if (!isJoined) {
     return (
-      <div className="min-h-screen bg-[#0a0a0b] flex items-center justify-center p-4 font-sans text-[#e0e0e0]">
-        <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-[#0f0f12] p-10 rounded-sm shadow-2xl w-full max-w-md border border-white/10 relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.5)]" />
+      <div className="min-h-screen bg-[#fcfcf9] flex items-center justify-center p-4 font-sans text-gray-900 overflow-hidden">
+        <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white p-10 rounded-sm shadow-[0_30px_60px_-15px_rgba(0,0,0,0.1)] w-full max-w-md border border-black/5 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-1 bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.2)]" />
           <div className="flex flex-col items-center mb-8">
-            <div className="w-20 h-20 bg-white/5 border border-white/10 rounded-full flex items-center justify-center mb-6">
-              <Landmark className="text-emerald-400 w-10 h-10" />
+            <div className="w-20 h-20 bg-gray-50 border border-gray-100 rounded-full flex items-center justify-center mb-6">
+              <Landmark className="text-blue-600 w-10 h-10" />
             </div>
-            <h1 className="text-4xl font-serif italic text-white tracking-widest text-center">GLOBAL TYCOON</h1>
-            <p className="text-xs uppercase tracking-[0.3em] opacity-40 text-center mt-3 font-bold">Persistent Real-Estate Protocol</p>
+            <h1 className="text-4xl font-serif italic text-black tracking-widest text-center">GLOBAL TYCOON</h1>
+            <p className="text-[10px] uppercase tracking-[0.3em] opacity-40 text-center mt-3 font-black">Capital Allocation Protocol</p>
           </div>
           <div className="space-y-6">
             <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-widest opacity-40 font-bold ml-1">Identity</label>
-              <input type="text" placeholder="OPERATOR NAME" className="w-full px-6 py-4 bg-white/5 border border-white/10 rounded-sm text-white placeholder:opacity-20 focus:border-emerald-500/50 transition-all outline-none font-mono uppercase text-sm" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+              <label className="text-[10px] uppercase tracking-widest opacity-40 font-bold ml-1">Identity Signature</label>
+              <input type="text" placeholder="OPERATOR NAME" className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-sm text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
             </div>
             {errorMsg && (
-              <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-sm text-red-400 text-[10px] font-mono leading-relaxed">
-                <span className="font-bold uppercase block mb-1">Fatal Exception:</span>
+              <div className="p-4 bg-red-50 text-red-600 border border-red-100 rounded-sm text-[10px] font-mono leading-relaxed">
+                <span className="font-bold uppercase block mb-1">Authorization Fault:</span>
                 {errorMsg}
               </div>
             )}
-            <button onClick={joinGame} disabled={!playerName} className="w-full py-5 bg-[#e0e0e0] text-[#0a0a0b] font-black text-sm uppercase tracking-widest rounded-sm shadow-xl hover:bg-white transition-all active:scale-95 disabled:opacity-30">Initialize Interface</button>
+            <button onClick={joinGame} disabled={!playerName} className="w-full py-5 bg-black text-white font-black text-sm uppercase tracking-widest rounded-sm shadow-xl hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Initialize Node</button>
           </div>
-          <p className="mt-8 text-[9px] text-center opacity-30 uppercase tracking-tighter">Connected to Supabase Realtime Gateway</p>
+          <p className="mt-8 text-[9px] text-center opacity-30 uppercase tracking-tight">Connected via Supabase Realtime Flux</p>
         </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="h-screen bg-[#0a0a0b] text-[#e0e0e0] font-sans flex flex-col overflow-hidden select-none">
+    <div className="h-screen bg-[#fcfcf9] text-gray-900 font-sans flex flex-col overflow-hidden select-none">
       {/* Top Header */}
-      <header className="h-16 border-b border-white/10 bg-[#0f0f12] px-8 flex items-center justify-between shadow-2xl z-20 shrink-0">
-        <div className="flex items-center space-x-6">
+      <header className="h-16 border-b border-black/5 bg-white px-4 md:px-8 flex items-center justify-between shadow-sm z-20 shrink-0">
+        <div className="flex items-center space-x-4 md:space-x-6">
           <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-            <span className="text-[10px] font-bold tracking-widest uppercase opacity-70 font-mono">Server Status: Online / {gameId.toUpperCase()}</span>
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse shadow-[0_0_8px_rgba(37,99,235,0.4)]"></div>
+            <span className="text-[9px] font-bold tracking-widest uppercase opacity-70 font-mono hidden sm:inline">Genesis Node: Active</span>
           </div>
-          <div className="h-8 w-[1px] bg-white/10"></div>
+          <div className="h-8 w-[1px] bg-black/5 hidden sm:block"></div>
           <div className="flex flex-col">
-            <span className="text-[9px] uppercase tracking-widest opacity-40 font-bold">Liquid Balance</span>
-            <span className="text-xl font-mono text-emerald-400 font-bold leading-none">${currentPlayer?.balance.toLocaleString()}.00</span>
+            <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Reserves</span>
+            <span className="text-lg md:text-xl font-mono text-blue-700 font-bold leading-none">${currentPlayer?.balance.toLocaleString()}</span>
           </div>
         </div>
-        <div className="flex items-center space-x-8 italic font-serif">
-          <div className="text-right">
-            <span className="block text-[9px] not-italic uppercase tracking-widest opacity-40 font-bold mb-1">Location Context</span>
-            <span className="text-amber-200 text-sm">{BOARD_SPACES[currentPlayer?.position || 0].name}</span>
+        <div className="flex items-center space-x-4 md:space-x-8 italic font-serif">
+          <div className="text-right hidden sm:block">
+            <span className="block text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold mb-1">Sector Data</span>
+            <span className="text-gray-600 text-sm">{BOARD_SPACES[currentPlayer?.position || 0].name}</span>
           </div>
-          <div className="w-[1px] h-8 bg-white/10"></div>
+          <div className="w-[1px] h-8 bg-black/5 hidden sm:block"></div>
           <div className="flex items-center gap-3">
-             <div className="hidden sm:flex flex-col text-right">
-                <span className="text-[9px] not-italic uppercase tracking-widest opacity-40 font-bold">Identity</span>
-                <span className="text-white text-xs">{currentPlayer?.name}</span>
+             <div className="flex flex-col text-right">
+                <span className="text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold">Operator</span>
+                <span className="text-black text-[10px] md:text-xs font-bold font-sans uppercase tracking-tight">{currentPlayer?.name}</span>
              </div>
-             <div className="w-10 h-10 rounded-sm border border-white/20 flex items-center justify-center text-xs font-mono" style={{ backgroundColor: currentPlayer?.player_color + '44' }}>
+             <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
                 {currentPlayer?.name.charAt(0)}
              </div>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      <main className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Game Area */}
-        <div className="flex-1 flex items-center justify-center p-4 bg-radial-[circle_at_center,_var(--tw-gradient-stops)] from-[#1a1b21] to-[#0a0a0b] overflow-auto">
-          <div className="relative aspect-square w-full max-w-[800px] bg-[#0a0a0c] border-[8px] border-[#16161a] rounded-sm shadow-[0_0_50px_rgba(0,0,0,0.5)] ring-1 ring-white/5">
+        <div className="flex-1 flex items-center justify-center p-2 md:p-4 bg-gray-50/50 overflow-auto relative">
+          <div className="relative aspect-square w-full max-w-[800px] bg-white border border-black/[0.05] rounded-sm shadow-[0_20px_50px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.02]">
             <div className="grid grid-cols-11 grid-rows-11 h-full w-full">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
@@ -383,41 +425,37 @@ export default function Game() {
 
                 const ownership = properties.find(p => p.space_id === space.id);
                 const owner = ownership ? players.find(p => p.id === ownership.owner_id) : null;
-                const isVertical = (space.id > 10 && space.id < 20) || space.id > 30;
 
                 return (
                   <div key={space.id} style={{ gridArea }} className={cn(
-                    "border-[0.5px] border-white/10 relative flex flex-col items-center bg-[#16161a] transition-colors overflow-hidden",
-                    isCorner && "bg-[#1f1f25]"
+                    "border-[0.5px] border-black/5 relative flex flex-col items-center bg-white transition-colors overflow-hidden group",
+                    isCorner && "bg-gray-50"
                   )}>
                     {space.color && (
                       <div className={cn(
-                        "absolute w-full h-[18%]", 
+                        "absolute w-full h-[15%]", 
                         space.id < 10 && "top-0", 
-                        space.id > 10 && space.id < 20 && "right-0 h-full w-[18%]", 
+                        space.id > 10 && space.id < 20 && "right-0 h-full w-[15%]", 
                         space.id > 20 && space.id < 30 && "bottom-0", 
-                        space.id > 30 && "left-0 h-full w-[18%]"
-                      )} style={{ backgroundColor: space.color + 'cc' }} />
+                        space.id > 30 && "left-0 h-full w-[15%]"
+                      )} style={{ backgroundColor: space.color + 'dd' }} />
                     )}
                     
-                    <div className={cn(
-                      "z-10 p-1 flex flex-col items-center justify-center h-full w-full text-center",
-                      isVertical && "rotate-0" // In a real monopoly UI we'd rotate, keeping simple for now
-                    )}>
-                      <span className="text-[10px] font-bold uppercase tracking-tighter opacity-80 leading-tight">
+                    <div className="z-10 p-0.5 md:p-1 flex flex-col items-center justify-center h-full w-full text-center">
+                      <span className="text-[7px] md:text-[8px] font-black uppercase tracking-tighter text-gray-800 leading-tight">
                         {space.name}
                       </span>
-                      {space.price && <span className="text-[9px] font-mono opacity-40 mt-auto">${space.price}</span>}
+                      {space.price && <span className="text-[6px] md:text-[8px] font-mono opacity-30 mt-auto">${space.price}</span>}
                     </div>
 
                     {ownership && ownership.buildings > 0 && (
-                      <div className="absolute top-1 right-1 flex gap-0.5 bg-black/40 rounded px-0.5 border border-white/5">
-                        {Array.from({ length: ownership.buildings }).map((_, i) => <Building2 key={i} className={cn("w-1.5 h-1.5", i === 4 ? "text-red-500" : "text-emerald-400")} />)}
+                      <div className="absolute top-1 right-1 flex gap-0.5 bg-white/80 rounded-[1px] p-0.5 border border-black/5 shadow-sm">
+                        {Array.from({ length: ownership.buildings }).map((_, i) => <Building2 key={i} className={cn("w-1.5 h-1.5 md:w-2 md:h-2", i === 4 ? "text-red-500" : "text-blue-600")} />)}
                       </div>
                     )}
 
                     {owner && (
-                      <div className="absolute bottom-0 left-0 w-full h-0.5" style={{ backgroundColor: owner.player_color }} />
+                      <div className="absolute bottom-0 left-0 w-full h-0.5 md:h-1" style={{ backgroundColor: owner.player_color }} />
                     )}
 
                     {/* Player Avatars */}
@@ -426,7 +464,7 @@ export default function Game() {
                         <motion.div 
                           key={p.id} 
                           layoutId={`p-${p.id}`} 
-                          className="w-3 h-3 rounded-sm ring-1 ring-white/50 shadow-[0_0_8px_rgba(0,0,0,0.5)]" 
+                          className="w-2.5 h-2.5 md:w-3.5 md:h-3.5 rounded-full ring-1 ring-white shadow-lg" 
                           style={{ backgroundColor: p.player_color }} 
                         />
                       ))}
@@ -436,37 +474,45 @@ export default function Game() {
               })}
 
               {/* Center Dashboard */}
-              <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-center p-8 bg-transparent">
-                <div className="text-center mb-12">
-                   <h1 className="text-[5vw] lg:text-[4rem] font-serif italic text-white/5 tracking-[0.2em] leading-none mb-2">WORLD ORDER</h1>
-                   <p className="text-[10px] uppercase tracking-[0.5em] opacity-10 italic">Persistent Multiplayer Real-Estate Interface</p>
+              <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-center p-4">
+                <div className="text-center mb-8 md:mb-12">
+                   <h1 className="text-[4vw] lg:text-[4.5rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none mb-1 md:mb-4 select-none">TYCOON GLOBAL</h1>
+                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.5em] opacity-40 font-black italic">Macro-Asset Exchange</p>
                 </div>
 
                 {currentPlayer && (
-                  <div className="relative group">
-                    <div className="absolute -inset-4 bg-emerald-500/10 blur-2xl opacity-0 group-hover:opacity-100 transition-all duration-1000" />
-                    <div className="relative bg-[#0f0f12] border border-white/10 p-12 rounded-sm flex flex-col items-center min-w-[280px]">
-                      <div className="text-[10px] uppercase tracking-[0.3em] font-black opacity-30 mb-6">Strategic Roll</div>
+                  <div className="relative">
+                    <div className="relative bg-white/80 backdrop-blur-sm border border-black/5 p-6 md:p-12 rounded-[1px] flex flex-col items-center min-w-[200px] md:min-w-[320px] shadow-2xl shadow-black/5">
+                      <div className="text-[8px] md:text-[10px] uppercase tracking-[0.3em] font-black opacity-20 mb-4 md:mb-8">Pulse Generation</div>
                       
-                      {rolling ? (
-                         <Dice5 className="w-20 h-20 text-white animate-spin mb-8" />
-                      ) : (
-                        <div className="text-6xl font-mono text-white mb-8 tracking-tighter">
-                          {currentPlayer.last_roll_at && isAfter(addMinutes(new Date(currentPlayer.last_roll_at), 30), new Date()) ? (
-                            <span className="text-3xl opacity-50">{formatDistanceToNow(addMinutes(new Date(currentPlayer.last_roll_at), 30))}</span>
-                          ) : (
-                            <Dice5 className="w-20 h-20 text-white" />
-                          )}
-                        </div>
-                      )}
+                      <div className="flex gap-4 mb-4 md:mb-8">
+                         {[0, 1].map(idx => (
+                           <motion.div 
+                            key={idx}
+                            animate={rolling ? { rotate: [0, 90, -90, 0], scale: [1, 1.2, 0.8, 1] } : {}}
+                            className="w-12 h-12 md:w-20 md:h-20 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-center shadow-inner"
+                           >
+                              <span className="text-2xl md:text-5xl font-mono text-black font-black">{diceVisual[idx]}</span>
+                           </motion.div>
+                         ))}
+                      </div>
 
                       <button 
                         onClick={rollDice} 
-                        disabled={rolling || (currentPlayer.last_roll_at && isAfter(addMinutes(new Date(currentPlayer.last_roll_at), 30), new Date()))} 
-                        className="px-12 py-4 bg-white text-black font-black uppercase tracking-widest text-xs hover:bg-emerald-400 transition-all disabled:opacity-10 disabled:cursor-not-allowed rounded-sm w-full"
+                        disabled={rolling || currentPlayer.rolls_remaining <= 0} 
+                        className="px-8 md:px-14 py-3 md:py-5 bg-black text-white font-black uppercase tracking-[0.2em] text-[10px] md:text-xs hover:bg-blue-600 transition-all disabled:opacity-10 disabled:cursor-not-allowed rounded-[1px] w-full shadow-lg"
                       >
-                        Roll Execution
+                        {rolling ? "PROCESSING..." : "EXECUTE MOVE"}
                       </button>
+
+                      <div className="mt-4 md:mt-6 flex flex-col items-center gap-1">
+                        <div className="flex gap-1.5">
+                          {[...Array(5)].map((_, i) => (
+                            <div key={i} className={cn("w-2 h-2 rounded-full", i < currentPlayer.rolls_remaining ? "bg-blue-600" : "bg-gray-200")} />
+                          ))}
+                        </div>
+                        <span className="text-[8px] font-black opacity-30 uppercase tracking-widest">{currentPlayer.rolls_remaining} CHARGES AVAILABLE</span>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -476,76 +522,80 @@ export default function Game() {
         </div>
 
         {/* Sidebar Controls */}
-        <aside className="w-full lg:w-[380px] bg-[#0f0f12] border-l border-white/10 flex flex-col shadow-2xl p-6 lg:p-10 shrink-0">
-          <div className="space-y-10 flex-1 flex flex-col">
-            {/* Identity/Balance Info */}
+        <aside className="w-full md:w-[320px] lg:w-[400px] bg-white border-t md:border-t-0 md:border-l border-black/5 flex flex-col shadow-2xl p-4 md:p-10 shrink-0 overflow-hidden">
+          <div className="flex-1 flex flex-col gap-8 md:gap-12 overflow-y-auto custom-scrollbar">
+            {/* Reserves & Context */}
             <div className="space-y-6">
-               <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                 <span className="text-[10px] uppercase tracking-[0.2em] font-black opacity-30">Active Protocol</span>
-                 <span className="text-sm font-serif italic text-white">Global-Supabase-01</span>
+               <div className="flex justify-between items-end border-b border-black/5 pb-2">
+                 <span className="text-[10px] uppercase tracking-widest font-black opacity-20">Sector Context</span>
+                 <span className="text-xs font-serif italic text-gray-600">{BOARD_SPACES[currentPlayer?.position || 0].name} ({BOARD_SPACES[currentPlayer?.position || 0].type})</span>
                </div>
                
-               <div className="bg-white/5 border border-white/10 p-6 rounded-sm relative overflow-hidden">
+               <div className="bg-gray-50/80 border border-black/[0.03] p-6 rounded-[1px] relative">
                  <div className="flex flex-col gap-1">
-                   <span className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Total Net Worth</span>
-                   <span className="text-3xl font-mono text-white font-black">${currentPlayer?.balance.toLocaleString()}</span>
+                   <span className="text-[8px] uppercase tracking-widest opacity-40 font-black">Capital Liquidity</span>
+                   <span className="text-4xl font-mono text-black font-black tracking-tight">${currentPlayer?.balance.toLocaleString()}</span>
                  </div>
-                 <div className="mt-6 flex flex-col gap-2">
-                    <span className="text-[10px] uppercase opacity-40 italic tracking-widest">Dividend Status</span>
-                    <span className="text-amber-200/80 text-xs italic font-serif">+$100 Scheduled (Daily Cycle)</span>
+                 <div className="mt-4 flex flex-col gap-1.5">
+                    <div className="flex justify-between items-center text-[9px] uppercase font-black opacity-30 tracking-widest">
+                       <span>Dividend Progress</span>
+                       <span>Daily</span>
+                    </div>
+                    <div className="w-full h-0.5 bg-gray-200 rounded-full overflow-hidden">
+                       <div className="h-full bg-amber-500 w-[60%]" />
+                    </div>
                  </div>
                </div>
             </div>
 
-            {/* Interaction Area */}
-            <div className="space-y-4">
-              <div className="text-[10px] uppercase tracking-[0.2em] font-black opacity-30 mb-2">Location Actions</div>
-              {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
+            {/* Location Interaction */}
+            {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
+              <div className="space-y-4">
+                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Asset Acquisition</div>
                 <div className="space-y-3">
-                  <div className="p-4 bg-white/3 border border-white/10 rounded-sm">
-                    <div className="flex justify-between text-[11px] mb-1">
-                       <span className="opacity-40 uppercase">Target Location</span>
-                       <span className="font-bold">{BOARD_SPACES[currentPlayer.position].name}</span>
-                    </div>
-                  </div>
-                  
                   {!properties.find(p => p.space_id === currentPlayer.position) ? (
                     <button 
                       onClick={() => buyProperty(currentPlayer.position)} 
                       disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
-                      className="w-full py-4 bg-white text-black font-black uppercase text-xs tracking-[0.2em] hover:bg-emerald-400 transition-all disabled:opacity-20 rounded-sm"
+                      className="w-full py-4 bg-white border border-black/10 text-black font-black uppercase text-xs tracking-widest hover:border-blue-600 hover:text-blue-600 transition-all disabled:opacity-20 rounded-[1px] shadow-sm flex items-center justify-center gap-2"
                     >
-                      Acquire Asset (${BOARD_SPACES[currentPlayer.position].price})
+                      SECURE ASSET · ${BOARD_SPACES[currentPlayer.position].price}
                     </button>
                   ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
                     <button 
                       onClick={() => buildHouse(currentPlayer.position)} 
                       disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
-                      className="w-full py-4 border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 font-black uppercase text-xs tracking-[0.2em] transition-all disabled:opacity-20 rounded-sm"
+                      className="w-full py-4 bg-blue-600 text-white font-black uppercase text-xs tracking-widest hover:bg-black transition-all disabled:opacity-20 rounded-[1px] shadow-lg flex items-center justify-center gap-2"
                     >
-                      Infrastructure Upgrade (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
+                      <Building2 className="w-4 h-4" /> UPGRADE INFRASTRUCTURE
                     </button>
                   ) : (
-                    <div className="py-4 text-center border border-white/5 text-[10px] uppercase tracking-widest opacity-20 italic">
-                      Asset Owned by Competitor
+                    <div className="p-4 bg-gray-50 border border-black/5 text-center text-[10px] uppercase tracking-widest opacity-20 font-black italic">
+                      Asset Managed by External Entity
                     </div>
                   )}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
-            {/* Players List */}
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="text-[10px] uppercase tracking-[0.2em] font-black opacity-30 mb-4">Network Participants ({players.length})</div>
-              <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2">
-                {players.sort((a, b) => b.balance - a.balance).map(player => (
-                  <div key={player.id} className="flex items-center gap-3 p-2 bg-white/2 rounded-sm border border-transparent hover:border-white/5">
-                    <div className="w-2 h-8 rounded-full" style={{ backgroundColor: player.player_color }} />
+            {/* leaderboard */}
+            <div className="flex-1 flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Consolidated Rankings</div>
+                 <div className="text-[10px] font-black text-blue-600/50">{players.length} NODE(S)</div>
+              </div>
+              <div className="space-y-2 pb-4">
+                {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
+                  <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group">
+                    <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
+                    <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
                     <div className="flex-1">
-                      <div className="text-[11px] font-bold text-white uppercase">{player.name}</div>
-                      <div className="text-[9px] font-mono opacity-40">${player.balance.toLocaleString()}</div>
+                      <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
+                      <div className="text-[9px] font-mono font-bold opacity-30">${p.balance.toLocaleString()}</div>
                     </div>
-                    {player.id === currentPlayer?.id && <div className="text-[8px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded-full border border-emerald-500/20 font-black uppercase">YOU</div>}
+                    {p.id === currentPlayer?.id && (
+                       <span className="text-[7px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Self</span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -554,27 +604,20 @@ export default function Game() {
         </aside>
       </main>
 
-      {/* Footer Log Marquee */}
-      <footer className="h-10 bg-[#0f0f12] border-t border-white/10 flex items-center px-6 overflow-hidden shrink-0">
-        <div className="text-[9px] uppercase tracking-widest text-emerald-500 shrink-0 mr-6 font-black flex items-center gap-2">
-          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-          Live Vector Logs:
+      {/* Marquee Footer */}
+      <footer className="h-10 bg-white border-t border-black/5 flex items-center px-6 overflow-hidden shrink-0">
+        <div className="text-[9px] uppercase tracking-widest text-blue-600 shrink-0 mr-8 font-black flex items-center gap-2 bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
+          <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-ping" />
+          Global Feed
         </div>
-        <div className="flex items-center space-x-12 text-[10px] opacity-50 animate-marquee whitespace-nowrap font-mono uppercase tracking-tighter">
+        <div className="flex items-center space-x-16 text-[10px] opacity-40 animate-marquee whitespace-nowrap font-mono uppercase tracking-tighter">
           {logs.length > 0 ? (
             <>
-              {logs.map((log, i) => <span key={i}>{log}</span>)}
-              {logs.map((log, i) => <span key={i + '-clone'}>{log}</span>)}
+              {logs.map((log, i) => <span key={`log-${i}`} className="flex items-center gap-2"><span className="text-blue-600 font-black">#</span> {log}</span>)}
+              {logs.map((log, i) => <span key={`log-clone-${i}`} className="flex items-center gap-2"><span className="text-blue-600 font-black">#</span> {log}</span>)}
             </>
           ) : (
-            <>
-              <span>Awaiting world vector data...</span>
-              <span>Initializing secure protocol connection...</span>
-              <span>Connecting to gateway genetic sequences...</span>
-              <span>Awaiting world vector data...</span>
-              <span>Initializing secure protocol connection...</span>
-              <span>Connecting to gateway genetic sequences...</span>
-            </>
+            <span>Synchronizing worldview... Preparing strategic vectors... Calibrating market indices...</span>
           )}
         </div>
       </footer>
