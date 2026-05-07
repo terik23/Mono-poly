@@ -148,35 +148,71 @@ export default function Game() {
   }, [logs, syncLogsToStorage]);
 
   useEffect(() => {
+    // Robust real-time subscription
     const channel = supabase
-      .channel(`game-${gameId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameId}` }, (payload) => {
-        if (payload.eventType === 'UPDATE') {
+      .channel(`world-sync-${gameId}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'players'
+      }, (payload) => {
+        if (payload.new && (payload.new as Player).game_id === gameId) {
           const updatedPlayer = payload.new as Player;
-          setPlayers(prev => prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p));
-          setCurrentPlayer(current => {
-            if (current && updatedPlayer.id === current.id) {
-              return updatedPlayer;
-            }
-            return current;
-          });
-        } else if (payload.eventType === 'INSERT') {
-          setPlayers(prev => [...prev.filter(p => p.id !== payload.new.id), payload.new as Player]);
+          if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+            setPlayers(prev => {
+              const exists = prev.find(p => p.id === updatedPlayer.id);
+              if (exists) {
+                return prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
+              }
+              return [...prev, updatedPlayer];
+            });
+            
+            // If it's the current player, update their local state too
+            setCurrentPlayer(current => {
+              if (current && updatedPlayer.id === current.id) {
+                // Merge to preserve local temporary states if any
+                return { ...current, ...updatedPlayer };
+              }
+              return current;
+            });
+          }
         }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'properties', filter: `game_id=eq.${gameId}` }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setProperties(prev => [...prev.filter(p => p.space_id !== payload.new.space_id), payload.new as PropertyOwnership]);
-        } else if (payload.eventType === 'UPDATE') {
-          setProperties(prev => prev.map(p => p.space_id === payload.new.space_id ? payload.new as PropertyOwnership : p));
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'properties'
+      }, (payload) => {
+        if (payload.new && (payload.new as PropertyOwnership).game_id === gameId) {
+          const updatedProp = payload.new as PropertyOwnership;
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            setProperties(prev => {
+              const exists = prev.find(p => p.space_id === updatedProp.space_id);
+              if (exists) {
+                return prev.map(p => p.space_id === updatedProp.space_id ? updatedProp : p);
+              }
+              return [...prev, updatedProp];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            // Handle property sales
+            fetchData(gameId);
+          }
         }
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log("Realtime connected for game:", gameId);
+        }
+      });
+
+    // Periodic cleanup/sync check
+    const syncInterval = setInterval(() => fetchData(gameId), 30000);
 
     return () => {
       supabase.removeChannel(channel);
+      clearInterval(syncInterval);
     };
-  }, [gameId]); // Removed currentPlayer dependency to avoid reconnection loops
+  }, [gameId, fetchData]);
 
   const joinGame = async () => {
     if (!playerName) return;
@@ -454,8 +490,8 @@ export default function Game() {
         {/* Game Area */}
         <div className="flex-1 flex items-center justify-center p-2 md:p-6 bg-[#f0f0f0] overflow-hidden relative">
           <LayoutGroup>
-            <div className="relative aspect-square w-full max-w-[min(96vw,90vh,950px)] bg-[#DAEED6] border-[12px] border-[#c1d9bc] rounded-xl shadow-[0_40px_100px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.05]">
-              <div className="grid grid-cols-11 grid-rows-11 h-full w-full p-1">
+            <div className="relative aspect-square w-full max-w-[min(100vw,92vh,1100px)] bg-[#DAEED6] border-[16px] border-[#c1d9bc] rounded-2xl shadow-[0_60px_150px_rgba(0,0,0,0.2)] ring-1 ring-black/[0.1]">
+              <div className="grid grid-cols-11 grid-rows-11 h-full w-full p-2">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
                 let gridArea = "";
@@ -503,22 +539,45 @@ export default function Game() {
                       <div className="absolute bottom-0 left-0 w-full h-0.5 md:h-1" style={{ backgroundColor: owner.player_color }} />
                     )}
 
-                    {/* Player Tokens */}
-                    <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-1 z-20 pointer-events-none p-1">
+                    {/* Player Tokens (Planes) */}
+                    <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-1 z-30 pointer-events-none p-1">
                       <AnimatePresence>
                         {players.filter(p => p.position === space.id).map(p => (
                           <motion.div 
                             key={p.id} 
                             layoutId={`player-token-${p.id}`} 
-                            initial={{ scale: 0 }}
-                            animate={{ scale: 1 }}
-                            exit={{ scale: 0 }}
-                            transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                            className="z-30"
+                            initial={{ scale: 0, rotate: -45, y: -20 }}
+                            animate={{ 
+                              scale: 1, 
+                              rotate: 0,
+                              y: 0
+                            }}
+                            exit={{ scale: 0, y: -20 }}
+                            transition={{ 
+                              type: "spring", 
+                              stiffness: 150, 
+                              damping: 20,
+                              layout: {
+                                duration: 1.2,
+                                ease: "anticipate"
+                              }
+                            }}
+                            className="z-40 drop-shadow-[0_15px_30px_rgba(0,0,0,0.4)]"
                           >
-                            <div 
-                              className="w-5 h-5 md:w-8 md:h-8 rounded-full border-2 border-white shadow-lg ring-1 ring-black/10" 
-                              style={{ backgroundColor: p.player_color }} 
+                            <Plane 
+                              className="w-7 h-7 md:w-12 md:h-12" 
+                              style={{ 
+                                fill: p.player_color, 
+                                stroke: 'white', 
+                                strokeWidth: 2,
+                                filter: 'drop-shadow(0px 6px 12px rgba(0,0,0,0.5))'
+                              }} 
+                            />
+                            {/* Directional Indicator or Shadow */}
+                            <motion.div 
+                               initial={{ opacity: 0 }}
+                               animate={{ opacity: 0.3 }}
+                               className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-1 bg-black rounded-full blur-[2px]" 
                             />
                           </motion.div>
                         ))}
