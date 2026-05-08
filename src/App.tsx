@@ -11,7 +11,13 @@ import {
   Building2, 
   MapPin, 
   Wallet, 
-  Dice5, 
+  Dices,
+  Dice1,
+  Dice2,
+  Dice3,
+  Dice4,
+  Dice5,
+  Dice6,
   History, 
   Users, 
   Send,
@@ -39,12 +45,11 @@ interface Player {
   last_roll_at: string | null;
   last_daily_at: string;
   player_color: string;
-  rolls_remaining: number; // New: Add to your Supabase table
-  last_recharge_at: string; // New: Add to your Supabase table
 }
 
 interface PropertyOwnership {
   space_id: number;
+  game_id: string;
   owner_id: string | null;
   buildings: number;
 }
@@ -89,31 +94,79 @@ export default function Game() {
     }
   }, []);
 
-  const rechargeRolls = useCallback(async (player: Player) => {
-    const lastRecharge = new Date(player.last_recharge_at);
-    const now = new Date();
-    const diffMs = now.getTime() - lastRecharge.getTime();
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-
-    if (diffMins >= 30 && player.rolls_remaining < 5) {
-      const { data } = await supabase
-        .from('players')
-        .update({ 
-          rolls_remaining: 5, 
-          last_recharge_at: now.toISOString() 
-        })
-        .eq('id', player.id)
-        .select()
-        .single();
-      if (data) setCurrentPlayer(data);
-    }
+  useEffect(() => {
+    // No-op - removed recharge logic
   }, []);
 
+  const [isBotThinking, setIsBotThinking] = useState(false);
+
+  // BOT LOGIC: Execute turns for all bots in the game
   useEffect(() => {
-    if (currentPlayer) {
-      rechargeRolls(currentPlayer);
-    }
-  }, [currentPlayer, rechargeRolls]);
+    const runBotTurns = async () => {
+      if (isBotThinking) return;
+      
+      const bots = players.filter(p => p.name.startsWith('[BOT]'));
+      if (bots.length === 0) return;
+
+      for (const bot of bots) {
+        // Check if bot can roll (time has passed)
+        const lastRoll = new Date(bot.last_roll_at || 0).getTime();
+        const now = new Date().getTime();
+        
+        if (now - lastRoll > 6000) {
+          setIsBotThinking(true);
+          try {
+            // Simulate bot roll
+            const move = Math.floor(Math.random() * 6) + 1;
+            const currentPos = bot.position;
+            let nextPos = (currentPos + move) % 40;
+            let balance = bot.balance;
+
+            // Pass Go
+            if (nextPos < currentPos) balance += 200;
+
+            const space = BOARD_SPACES[nextPos];
+            
+            // Bot buys property if can afford
+            let boughtProperty = false;
+            if (space.type === 'property' && space.price && balance >= space.price) {
+              const isOwned = properties.find(p => p.space_id === nextPos);
+              if (!isOwned) {
+                const { error: propErr } = await supabase
+                  .from('properties')
+                  .insert({ game_id: gameId, space_id: nextPos, owner_id: bot.id, buildings: 0 });
+                
+                if (!propErr) {
+                  balance -= space.price;
+                  boughtProperty = true;
+                }
+              }
+            }
+
+            // Update bot
+            await supabase
+              .from('players')
+              .update({ 
+                position: nextPos, 
+                balance: balance, 
+                last_roll_at: new Date().toISOString()
+              })
+              .eq('id', bot.id);
+
+            setLogs(prev => [`BOT ${bot.name} ROLLED ${move}${boughtProperty ? ' AND BOUGHT ' + space.name : ''}`, ...prev]);
+          } catch (e) {
+            console.error("Bot loop error:", e);
+          } finally {
+            setIsBotThinking(false);
+          }
+          break; // Only move one bot at a time
+        }
+      }
+    };
+
+    const interval = setInterval(runBotTurns, 4000);
+    return () => clearInterval(interval);
+  }, [players, properties, gameId, isBotThinking]);
 
   // Sync logs to Supabase Storage "Server" bucket
   const syncLogsToStorage = useCallback(async (newLogs: string[]) => {
@@ -207,6 +260,9 @@ export default function Game() {
 
     // Periodic cleanup/sync check
     const syncInterval = setInterval(() => fetchData(gameId), 30000);
+    
+    // Fetch initial data
+    fetchData(gameId);
 
     return () => {
       supabase.removeChannel(channel);
@@ -241,9 +297,7 @@ export default function Game() {
         balance: 1500,
         position: 0,
         player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
-        last_daily_at: new Date().toISOString(),
-        rolls_remaining: 5,
-        last_recharge_at: new Date().toISOString()
+        last_daily_at: new Date().toISOString()
       };
 
       const { data, error: insertError } = await supabase
@@ -268,14 +322,6 @@ export default function Game() {
 
   const rollDice = async () => {
     if (!currentPlayer || rolling) return;
-
-    const currentRolls = currentPlayer.rolls_remaining ?? 5;
-    if (currentRolls <= 0) {
-      const nextRecharge = addMinutes(new Date(currentPlayer.last_recharge_at), 30);
-      const timeRemaining = formatDistanceToNow(nextRecharge);
-      setLogs(prev => [`0 ROLLS REMAINING. RECHARGE IN ${timeRemaining.toUpperCase()}`, ...prev]);
-      return;
-    }
 
     setRolling(true);
     
@@ -311,7 +357,6 @@ export default function Game() {
       ...currentPlayer, 
       position: nextPos, 
       balance: balance,
-      rolls_remaining: Math.max(0, currentRolls - 1),
       last_roll_at: new Date().toISOString()
     } as Player;
     
@@ -338,7 +383,6 @@ export default function Game() {
         position: nextPos, 
         balance: balance,
         last_roll_at: new Date().toISOString(),
-        rolls_remaining: Math.max(0, currentRolls - 1),
         last_daily_at: balance > currentPlayer.balance ? new Date().toISOString() : currentPlayer.last_daily_at
       })
       .eq('id', currentPlayer.id);
@@ -429,9 +473,37 @@ export default function Game() {
             <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Classic Board Game</p>
           </div>
           <div className="space-y-8">
+            {players.length > 0 && players.filter(p => !p.name.startsWith('[BOT]')).length > 0 && (
+              <div className="space-y-3">
+                <label className="text-[10px] uppercase tracking-widest opacity-30 font-black ml-1">Resume Session</label>
+                <div className="grid grid-cols-1 gap-2">
+                  {players.filter(p => !p.name.startsWith('[BOT]')).slice(0, 3).map(p => (
+                    <button 
+                      key={p.id}
+                      onClick={() => {
+                        setPlayerName(p.name);
+                        setCurrentPlayer(p);
+                        setIsJoined(true);
+                        fetchData(gameId);
+                      }}
+                      className="flex items-center justify-between p-4 bg-gray-50 border border-black/[0.03] rounded-2xl hover:bg-blue-50 hover:border-blue-200 transition-all group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-mono" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
+                          {p.name.charAt(0)}
+                        </div>
+                        <span className="text-[11px] font-black uppercase tracking-tight text-gray-700">{p.name}</span>
+                      </div>
+                      <span className="text-[10px] font-mono opacity-30 group-hover:opacity-100 group-hover:text-blue-600 transition-opacity">${p.balance}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
-              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Your Name</label>
-              <input type="text" placeholder="NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">New Player</label>
+              <input type="text" placeholder="ENTER NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
             </div>
             {errorMsg && (
               <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
@@ -440,6 +512,24 @@ export default function Game() {
               </div>
             )}
             <button onClick={joinGame} disabled={!playerName} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Start Game</button>
+            <button 
+              onClick={async () => {
+                const botName = `[BOT] ${Math.random().toString(36).substring(7).toUpperCase()}`;
+                const newBot = {
+                  game_id: gameId,
+                  name: botName,
+                  balance: 1500,
+                  position: 0,
+                  player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
+                  last_daily_at: new Date().toISOString()
+                };
+                await supabase.from('players').insert(newBot);
+                setLogs(prev => [`AI OPERATOR ${botName} DEPLOYED`, ...prev]);
+              }} 
+              className="w-full py-4 border-2 border-black/10 text-black font-black uppercase tracking-widest text-[10px] rounded-2xl hover:bg-gray-50 transition-all"
+            >
+              Add AI Opponent
+            </button>
           </div>
           <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Syncing: Online</p>
         </motion.div>
@@ -588,7 +678,7 @@ export default function Game() {
               })}
 
               {/* Center Dashboard */}
-              <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-center p-4">
+              <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-start pt-8 md:pt-16 p-4">
                 <div className="text-center mb-8 md:mb-12">
                    <h1 className="text-[5vw] lg:text-[5rem] font-serif italic text-black/[0.05] tracking-[0.1em] leading-none mb-1 md:mb-4 select-none">TYCOON</h1>
                    <p className="text-[8px] md:text-[10px] uppercase tracking-[0.6em] opacity-30 font-black italic">Classic Edition</p>
@@ -603,21 +693,29 @@ export default function Game() {
                          <motion.div 
                           animate={rolling ? { 
                             rotateY: [0, 180, 360, 540, 720],
-                            scale: [1, 1.4, 0.9, 1.2, 1],
+                            rotateX: [0, 90, 180, 270, 360],
+                            scale: [1, 1.4, 0.8, 1.2, 1],
                             z: [0, 50, -50, 20, 0]
                           } : {}}
                           transition={{ duration: 0.5, repeat: rolling ? Infinity : 0, ease: "easeInOut" }}
-                          className="w-24 h-24 md:w-40 md:h-40 bg-white border border-black/10 rounded-3xl flex items-center justify-center shadow-xl relative preserve-3d"
+                          className="w-24 h-24 md:w-32 md:h-32 bg-white border-4 border-black/10 rounded-2xl flex items-center justify-center shadow-xl relative preserve-3d"
                          >
-                            <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 rounded-3xl" />
-                            <span className="relative z-10 text-5xl md:text-8xl font-mono text-black font-black drop-shadow-md">{diceVisual[0]}</span>
+                            <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-white rounded-xl shadow-inner" />
+                            <div className="relative z-10 text-blue-600">
+                              {diceVisual[0] === 1 && <Dice1 className="w-16 h-16 md:w-20 md:h-20" />}
+                              {diceVisual[0] === 2 && <Dice2 className="w-16 h-16 md:w-20 md:h-20" />}
+                              {diceVisual[0] === 3 && <Dice3 className="w-16 h-16 md:w-20 md:h-20" />}
+                              {diceVisual[0] === 4 && <Dice4 className="w-16 h-16 md:w-20 md:h-20" />}
+                              {diceVisual[0] === 5 && <Dice5 className="w-16 h-16 md:w-20 md:h-20" />}
+                              {diceVisual[0] === 6 && <Dice6 className="w-16 h-16 md:w-20 md:h-20" />}
+                            </div>
                          </motion.div>
                       </div>
 
                       <button 
                         onClick={rollDice} 
-                        disabled={rolling || currentPlayer.rolls_remaining <= 0} 
-                        className="px-12 md:px-20 py-5 md:py-8 bg-blue-600 text-white font-black uppercase tracking-[0.4em] text-[12px] md:text-lg hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95 flex items-center justify-center gap-4"
+                        disabled={rolling} 
+                        className="px-12 md:px-20 py-5 md:py-8 bg-blue-600 text-white font-black uppercase tracking-[0.4em] text-[12px] md:text-lg hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95 flex items-center justify-center gap-4 group"
                       >
                         {rolling ? (
                           <div className="flex gap-2">
@@ -625,24 +723,18 @@ export default function Game() {
                              <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
                              <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.4s]" />
                           </div>
-                        ) : "ROLL DICE"}
+                        ) : (
+                          <div className="flex flex-col items-center">
+                            <div className="flex items-center gap-4">
+                              <Dices className="w-6 h-6 md:w-8 md:h-8 group-hover:rotate-12 transition-transform" />
+                              <span>ROLL</span>
+                            </div>
+                          </div>
+                        )}
                       </button>
+                      
 
-                      <div className="mt-8 md:mt-12 flex flex-col items-center gap-3">
-                        <div className="flex gap-3">
-                          {[...Array(5)].map((_, i) => (
-                            <motion.div 
-                              key={i} 
-                              animate={i < (currentPlayer.rolls_remaining ?? 5) ? { 
-                                scale: [1, 1.3, 1],
-                                opacity: 1
-                              } : { opacity: 0.2 }}
-                              className={cn("w-4 h-4 rounded-full border-2 border-white shadow-lg", i < (currentPlayer.rolls_remaining ?? 5) ? "bg-blue-600" : "bg-gray-200")} 
-                            />
-                          ))}
-                        </div>
-                        <span className="text-[10px] font-black opacity-30 uppercase tracking-[0.3em]">{currentPlayer.rolls_remaining ?? 5} ROLLS LEFT</span>
-                      </div>
+
                     </div>
                   </div>
                 )}
@@ -683,6 +775,17 @@ export default function Game() {
                        <div className="h-full bg-amber-500 w-[60%]" />
                     </div>
                  </div>
+                 <button 
+                  onClick={() => {
+                    setIsJoined(false);
+                    setCurrentPlayer(null);
+                    setPlayerName('');
+                    setShowSidebar(false);
+                  }}
+                  className="mt-6 w-full py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
+                >
+                  <X className="w-4 h-4" /> Switch Player
+                </button>
                </div>
             </div>
 
