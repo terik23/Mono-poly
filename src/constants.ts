@@ -49,4 +49,28 @@ export const BOARD_SPACES: GameSpace[] = [
   { id: 37, name: 'New York', type: 'property', group: 'dark-blue', price: 350, rent: [35, 175, 500, 1100, 1300, 1500], color: '#0072bb' },
   { id: 38, name: 'Luxury Tax', type: 'tax', price: 100 },
   { id: 39, name: 'Zurich', type: 'property', group: 'dark-blue', price: 400, rent: [50, 200, 600, 1400, 1700, 2000], color: '#0072bb' },
+  // 40-199 Expansion
+  ...Array.from({ length: 160 }, (_, i) => {
+    const id = i + 40;
+    const types: GameSpace['type'][] = ['property', 'property', 'property', 'chance', 'chest', 'railroad', 'tax'];
+    const type = id % 10 === 0 ? 'corner' : types[id % types.length];
+    const colors = ['#8B4513', '#87CEEB', '#FF69B4', '#FFA500', '#FF0000', '#FFFF00', '#008000', '#0000FF'];
+    const color = colors[Math.floor(id / 20) % colors.length];
+    
+    if (type === 'corner') return { id, name: `Junction ${id/10}`, type: 'corner' } as GameSpace;
+    if (type === 'tax') return { id, name: 'Global Tax', type: 'tax', price: 150 } as GameSpace;
+    if (type === 'chance') return { id, name: 'Chance', type: 'chance' } as GameSpace;
+    if (type === 'chest') return { id, name: 'Chest', type: 'chest' } as GameSpace;
+    if (type === 'railroad') return { id, name: `Station ${id}`, type: 'railroad', price: 200 } as GameSpace;
+    
+    return {
+      id,
+      name: `City ${id}`,
+      type: 'property',
+      group: `Group ${Math.floor(id/10)}`,
+      price: 100 + (Math.floor(id/10) * 20),
+      rent: [10, 50, 150, 450, 600, 800],
+      color
+    } as GameSpace;
+  })
 ];

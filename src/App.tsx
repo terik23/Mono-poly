@@ -26,8 +26,26 @@ import {
   Timer,
   Plane,
   Menu,
-  X
+  X,
+  TrendingUp,
+  TrendingDown,
+  Briefcase,
+  Coins,
+  ArrowRightLeft,
+  Skull,
+  Bell
 } from 'lucide-react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { formatDistanceToNow, addMinutes, isAfter } from 'date-fns';
@@ -36,15 +54,26 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+interface Stock {
+  symbol: string;
+  name: string;
+  price: number;
+  history: { time: string; price: number }[];
+  change: number;
+}
+
 interface Player {
   id: string;
   game_id: string;
   name: string;
+  password?: string;
   balance: number;
   position: number;
   last_roll_at: string | null;
   last_daily_at: string;
   player_color: string;
+  is_bankrupt?: boolean;
+  debt_started_at?: string | null;
 }
 
 interface PropertyOwnership {
@@ -63,13 +92,65 @@ export default function Game() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [properties, setProperties] = useState<PropertyOwnership[]>([]);
   const [gameId] = useState('global-tycoon-world');
-  const [isJoined, setIsJoined] = useState(false);
   const [playerName, setPlayerName] = useState('');
+  const [password, setPassword] = useState('');
+  const [isJoined, setIsJoined] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [rolling, setRolling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1]);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats'>('board');
+  const [zoom, setZoom] = useState(0.4);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  
+  // Auto-follow logic
+  useEffect(() => {
+    if (isFollowing && currentPlayer && scrollContainerRef.current) {
+      const space = document.getElementById(`space-${currentPlayer.position}`);
+      if (space) {
+        const container = scrollContainerRef.current;
+        
+        // Ensure we are zoomed in for detail
+        if (zoom < 1.4) {
+          setZoom(1.5);
+          return;
+        }
+
+        const spaceRect = space.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        
+        // Robust centering using bounding rects to handle scaling/transforms correctly
+        const scrollX = container.scrollLeft + (spaceRect.left + spaceRect.width / 2) - (containerRect.left + containerRect.width / 2);
+        const scrollY = container.scrollTop + (spaceRect.top + spaceRect.height / 2) - (containerRect.top + containerRect.height / 2);
+        
+        container.scrollTo({
+          left: scrollX,
+          top: scrollY,
+          behavior: 'smooth'
+        });
+      }
+    }
+  }, [isFollowing, currentPlayer?.position, currentPlayer, zoom]);
+
+  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
+  const [stocks, setStocks] = useState<Stock[]>([
+    { symbol: 'AMZN', name: 'Anazona', price: 150, history: [], change: 0 },
+    { symbol: 'WDWS', name: 'Windidows', price: 280, history: [], change: 0 },
+    { symbol: 'META', name: 'Metas', price: 310, history: [], change: 0 },
+    { symbol: 'EBAY', name: 'Ebais', price: 45, history: [], change: 0 },
+    { symbol: 'PEAR', name: 'Pear', price: 190, history: [], change: 0 },
+  ]);
+  const [playerStocks, setPlayerStocks] = useState<Record<string, number>>({}); // symbol -> amount
+  const [isBotThinking, setIsBotThinking] = useState(false);
+
+  const addToast = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
+  };
 
   const fetchData = useCallback(async (gid: string) => {
     try {
@@ -95,78 +176,137 @@ export default function Game() {
   }, []);
 
   useEffect(() => {
-    // No-op - removed recharge logic
-  }, []);
+    // Analytics Sync and Health check
+    if (view === 'stats') {
+       fetchData(gameId);
+    }
+  }, [view, gameId, fetchData]);
 
-  const [isBotThinking, setIsBotThinking] = useState(false);
 
-  // BOT LOGIC: Execute turns for all bots in the game
+  // Zoom to fit or manual zoom?
   useEffect(() => {
-    const runBotTurns = async () => {
-      if (isBotThinking) return;
-      
-      const bots = players.filter(p => p.name.startsWith('[BOT]'));
-      if (bots.length === 0) return;
+    const handleResize = () => {
+      if (!isFollowing) {
+        const vh = window.innerHeight;
+        const vw = window.innerWidth;
+        const size = Math.min(vw * 0.8, vh * 0.8);
+        setZoom(size / 2000);
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [isFollowing]);
 
-      for (const bot of bots) {
-        // Check if bot can roll (time has passed)
-        const lastRoll = new Date(bot.last_roll_at || 0).getTime();
-        const now = new Date().getTime();
+  // One-time reset script
+  useEffect(() => {
+    const resetPlayers = async () => {
+      const hasReset = localStorage.getItem('tycoon_v17_reset');
+      if (!hasReset) {
+        // Delete everything to enforce password accounts
+        const { error: pErr } = await supabase.from('properties').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        const { error: uErr } = await supabase.from('players').delete().neq('id', '00000000-0000-0000-0000-000000000000');
         
-        if (now - lastRoll > 6000) {
-          setIsBotThinking(true);
-          try {
-            // Simulate bot roll
-            const move = Math.floor(Math.random() * 6) + 1;
-            const currentPos = bot.position;
-            let nextPos = (currentPos + move) % 40;
-            let balance = bot.balance;
-
-            // Pass Go
-            if (nextPos < currentPos) balance += 200;
-
-            const space = BOARD_SPACES[nextPos];
-            
-            // Bot buys property if can afford
-            let boughtProperty = false;
-            if (space.type === 'property' && space.price && balance >= space.price) {
-              const isOwned = properties.find(p => p.space_id === nextPos);
-              if (!isOwned) {
-                const { error: propErr } = await supabase
-                  .from('properties')
-                  .insert({ game_id: gameId, space_id: nextPos, owner_id: bot.id, buildings: 0 });
-                
-                if (!propErr) {
-                  balance -= space.price;
-                  boughtProperty = true;
-                }
-              }
-            }
-
-            // Update bot
-            await supabase
-              .from('players')
-              .update({ 
-                position: nextPos, 
-                balance: balance, 
-                last_roll_at: new Date().toISOString()
-              })
-              .eq('id', bot.id);
-
-            setLogs(prev => [`BOT ${bot.name} ROLLED ${move}${boughtProperty ? ' AND BOUGHT ' + space.name : ''}`, ...prev]);
-          } catch (e) {
-            console.error("Bot loop error:", e);
-          } finally {
-            setIsBotThinking(false);
-          }
-          break; // Only move one bot at a time
+        if (!pErr && !uErr) {
+          localStorage.setItem('tycoon_v17_reset', 'true');
+          window.location.reload();
         }
       }
     };
+    resetPlayers(); 
+  }, []);
 
-    const interval = setInterval(runBotTurns, 4000);
+  // Stock Market Fluctuation
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setStocks(prev => prev.map(s => {
+        // High volatility with occasional extreme swings (Insane dips/ups)
+        const isExtreme = Math.random() < 0.15; 
+        const volatility = isExtreme ? 0.6 : 0.08;
+        const direction = Math.random() < 0.5 ? -1 : 1;
+        const change = direction * Math.random() * volatility;
+        
+        const newPrice = Math.max(0.1, s.price * (1 + change));
+        const newHistory = [...s.history.slice(-19), { time: new Date().toLocaleTimeString(), price: newPrice }];
+        return { 
+          ...s, 
+          price: Number(newPrice.toFixed(2)), 
+          history: newHistory,
+          change: Number((change * 100).toFixed(2))
+        };
+      }));
+
+      // Debt Reset System (1 Hour Check)
+      setPlayers(prev => {
+        prev.forEach(async (p) => {
+          if (p.balance < 0) {
+            if (!p.debt_started_at) {
+              await supabase.from('players').update({ debt_started_at: new Date().toISOString() }).eq('id', p.id);
+            } else {
+              const debtHours = (new Date().getTime() - new Date(p.debt_started_at).getTime()) / (1000 * 60 * 60);
+              if (debtHours >= 1) {
+                addToast(`${p.name} reset due to overdue debt`, "error");
+                await supabase.from('players').update({ balance: 1500, position: 0, debt_started_at: null, is_bankrupt: false }).eq('id', p.id);
+              }
+            }
+          } else if (p.debt_started_at) {
+            await supabase.from('players').update({ debt_started_at: null }).eq('id', p.id);
+          }
+        });
+        return prev;
+      });
+    }, 30000); // 30 seconds per update for slower market
     return () => clearInterval(interval);
-  }, [players, properties, gameId, isBotThinking]);
+  }, []);
+
+  const buyStock = (symbol: string, amount: number) => {
+    const stock = stocks.find(s => s.symbol === symbol);
+    if (!stock || !currentPlayer) return;
+    const cost = stock.price * amount;
+    if (currentPlayer.balance < cost) {
+      addToast("Insufficient funds for stocks", "error");
+      return;
+    }
+
+    setPlayerStocks(prev => ({
+      ...prev,
+      [symbol]: (prev[symbol] || 0) + amount
+    }));
+
+    handleBalanceUpdate(currentPlayer.id, -cost);
+    addToast(`Purchased ${amount} shares of ${stock.name}`, "success");
+  };
+
+  const sellStock = (symbol: string, amount: number) => {
+    const stock = stocks.find(s => s.symbol === symbol);
+    const owned = playerStocks[symbol] || 0;
+    if (!stock || !currentPlayer || owned < amount) return;
+
+    const profit = stock.price * amount;
+    setPlayerStocks(prev => ({
+      ...prev,
+      [symbol]: owned - amount
+    }));
+
+    handleBalanceUpdate(currentPlayer.id, profit);
+    addToast(`Sold ${amount} shares of ${stock.name} for $${profit.toFixed(2)}`, "success");
+  };
+
+  const handleBalanceUpdate = async (playerId: string, delta: number) => {
+    const player = players.find(p => p.id === playerId);
+    if (!player) return;
+    
+    const newBalance = player.balance + delta;
+    
+    // Bankruptcy check
+    if (newBalance < -500) {
+      addToast(`${player.name} DECLARED BANKRUPT!`, "error");
+      await supabase.from('players').update({ balance: 1500, position: 0, is_bankrupt: false }).eq('id', playerId);
+      return;
+    }
+
+    await supabase.from('players').update({ balance: newBalance }).eq('id', playerId);
+  };
 
   // Sync logs to Supabase Storage "Server" bucket
   const syncLogsToStorage = useCallback(async (newLogs: string[]) => {
@@ -271,7 +411,10 @@ export default function Game() {
   }, [gameId, fetchData]);
 
   const joinGame = async () => {
-    if (!playerName) return;
+    if (!playerName || !password) {
+      addToast("Name and Password required", "error");
+      return;
+    }
     setErrorMsg(null);
 
     try {
@@ -284,16 +427,33 @@ export default function Game() {
 
       if (checkError) throw checkError;
 
-      if (existingPlayer) {
-        setCurrentPlayer(existingPlayer);
+      if (authMode === 'signup') {
+        if (existingPlayer) {
+          addToast("Operating Name already registered", "error");
+          return;
+        }
+      } else {
+        // Login mode
+        if (!existingPlayer) {
+          addToast("Operator not found. Please Sign Up.", "error");
+          return;
+        }
+        if (existingPlayer.password && existingPlayer.password !== password) {
+          addToast("Invalid Security Key", "error");
+          return;
+        }
+        
+        setCurrentPlayer({ ...existingPlayer, password });
         setIsJoined(true);
         fetchData(gameId);
         return;
       }
 
+      // Create new player for Sign Up
       const newPlayer = {
         game_id: gameId,
         name: playerName,
+        password: password,
         balance: 1500,
         position: 0,
         player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
@@ -313,10 +473,11 @@ export default function Game() {
         setIsJoined(true);
         fetchData(gameId);
         setLogs(prev => [`TYCOON ${playerName.toUpperCase()} INITIALIZED`, ...prev]);
+        addToast("Welcome to Tycoon", "success");
       }
     } catch (e: any) {
       console.error("Join Game Error:", e);
-      setErrorMsg(`Join Failed: ${e.message || 'Check your Supabase configuration and tables.'}`);
+      setErrorMsg(`Join Failed: ${e.message}`);
     }
   };
 
@@ -335,18 +496,26 @@ export default function Game() {
     setDiceVisual([d1]);
     const move = d1;
     
-    let nextPos = (currentPlayer.position + move) % 40;
+    let nextPos = (currentPlayer.position + move) % 200;
     let balance = currentPlayer.balance;
 
     const lastDaily = new Date(currentPlayer.last_daily_at);
     if (new Date().getTime() - lastDaily.getTime() > 24 * 60 * 60 * 1000) {
       balance += 100;
-      setLogs(prev => [`DAILY DIVIDEND $100 GRANTED`, ...prev]);
+      addToast("Daily dividend $100 collected", "success");
     }
 
     if (nextPos < currentPlayer.position) {
       balance += 200;
-      setLogs(prev => [`PASSED GO! ACQUIRED $200`, ...prev]);
+      addToast("Passed GO! +$200", "success");
+      
+      // Tax for big companies
+      const myProps = properties.filter(p => p.owner_id === currentPlayer.id).length;
+      if (myProps > 10) {
+        const tax = myProps * 15;
+        balance -= tax;
+        addToast(`Conglomerate Tax: -$${tax}`, "error");
+      }
     }
 
     const space = BOARD_SPACES[nextPos];
@@ -435,6 +604,24 @@ export default function Game() {
     setLogs(prev => [`Upgraded ${space.name} for $${houseCost}`, ...prev]);
   };
 
+  const transferMoney = async (toPlayerId: string, amount: number) => {
+    if (!currentPlayer || amount <= 0 || currentPlayer.balance < amount) {
+      addToast("Invalid transfer request", "error");
+      return;
+    }
+
+    const { error: senderErr } = await supabase.from('players').update({ balance: currentPlayer.balance - amount }).eq('id', currentPlayer.id);
+    const target = players.find(p => p.id === toPlayerId);
+    if (target) {
+      await supabase.from('players').update({ balance: target.balance + amount }).eq('id', toPlayerId);
+    }
+
+    if (!senderErr) {
+      addToast(`Transferred $${amount} to ${target?.name}`, "success");
+      setLogs(prev => [`TRANSFERRED $${amount} TO ${target?.name.toUpperCase()}`, ...prev]);
+    }
+  };
+
   const sellProperty = async (spaceId: number) => {
     if (!currentPlayer) return;
     const ownership = properties.find(p => p.space_id === spaceId && p.owner_id === currentPlayer.id);
@@ -472,21 +659,43 @@ export default function Game() {
             <h1 className="text-5xl font-serif italic text-black tracking-widest text-center">TYCOON</h1>
             <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Classic Board Game</p>
           </div>
+          <div className="flex bg-gray-100 p-1 rounded-2xl mb-8">
+            <button 
+              onClick={() => setAuthMode('login')}
+              className={cn(
+                "flex-1 py-3 text-[10px] uppercase tracking-widest font-black rounded-xl transition-all",
+                authMode === 'login' ? "bg-white text-black shadow-sm" : "text-gray-400"
+              )}
+            >
+              Log In
+            </button>
+            <button 
+              onClick={() => setAuthMode('signup')}
+              className={cn(
+                "flex-1 py-3 text-[10px] uppercase tracking-widest font-black rounded-xl transition-all",
+                authMode === 'signup' ? "bg-white text-black shadow-sm" : "text-gray-400"
+              )}
+            >
+              Sign Up
+            </button>
+          </div>
+
           <div className="space-y-8">
-            {players.length > 0 && players.filter(p => !p.name.startsWith('[BOT]')).length > 0 && (
+            {authMode === 'login' && players.length > 0 && players.filter(p => !p.name.startsWith('[BOT]')).length > 0 && (
               <div className="space-y-3">
-                <label className="text-[10px] uppercase tracking-widest opacity-30 font-black ml-1">Resume Session</label>
+                <label className="text-[10px] uppercase tracking-widest opacity-30 font-black ml-1">Recent Operators</label>
                 <div className="grid grid-cols-1 gap-2">
                   {players.filter(p => !p.name.startsWith('[BOT]')).slice(0, 3).map(p => (
                     <button 
                       key={p.id}
                       onClick={() => {
                         setPlayerName(p.name);
-                        setCurrentPlayer(p);
-                        setIsJoined(true);
-                        fetchData(gameId);
+                        // Don't auto-join here, force password check
                       }}
-                      className="flex items-center justify-between p-4 bg-gray-50 border border-black/[0.03] rounded-2xl hover:bg-blue-50 hover:border-blue-200 transition-all group"
+                      className={cn(
+                        "flex items-center justify-between p-4 border rounded-2xl transition-all group",
+                        playerName === p.name ? "bg-blue-50 border-blue-200" : "bg-gray-50 border-black/[0.03] hover:border-blue-100"
+                      )}
                     >
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-mono" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
@@ -494,16 +703,23 @@ export default function Game() {
                         </div>
                         <span className="text-[11px] font-black uppercase tracking-tight text-gray-700">{p.name}</span>
                       </div>
-                      <span className="text-[10px] font-mono opacity-30 group-hover:opacity-100 group-hover:text-blue-600 transition-opacity">${p.balance}</span>
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
-            <div className="space-y-2">
-              <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">New Player</label>
-              <input type="text" placeholder="ENTER NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">
+                  {authMode === 'login' ? 'Operator Name' : 'New Identity'}
+                </label>
+                <input type="text" placeholder="ENTER NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Access Key</label>
+                <input type="password" placeholder="PASSWORD" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </div>
             </div>
             {errorMsg && (
               <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
@@ -511,24 +727,8 @@ export default function Game() {
                 {errorMsg}
               </div>
             )}
-            <button onClick={joinGame} disabled={!playerName} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">Start Game</button>
-            <button 
-              onClick={async () => {
-                const botName = `[BOT] ${Math.random().toString(36).substring(7).toUpperCase()}`;
-                const newBot = {
-                  game_id: gameId,
-                  name: botName,
-                  balance: 1500,
-                  position: 0,
-                  player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
-                  last_daily_at: new Date().toISOString()
-                };
-                await supabase.from('players').insert(newBot);
-                setLogs(prev => [`AI OPERATOR ${botName} DEPLOYED`, ...prev]);
-              }} 
-              className="w-full py-4 border-2 border-black/10 text-black font-black uppercase tracking-widest text-[10px] rounded-2xl hover:bg-gray-50 transition-all"
-            >
-              Add AI Opponent
+            <button onClick={joinGame} disabled={!playerName || !password} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">
+              {authMode === 'login' ? 'Authenticate' : 'Register Operator'}
             </button>
           </div>
           <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Syncing: Online</p>
@@ -539,6 +739,38 @@ export default function Game() {
 
   return (
     <div className="h-screen bg-[#fcfcf9] text-gray-900 font-sans flex flex-col overflow-hidden select-none">
+      {/* Toasts (Apple Style) */}
+      <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-[400px] px-4 pointer-events-none">
+        <AnimatePresence>
+          {toasts.map(t => (
+            <motion.div 
+              key={t.id}
+              initial={{ y: -100, opacity: 0, scale: 0.9 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: -20, opacity: 0, scale: 0.95 }}
+              className="bg-white/80 backdrop-blur-2xl border border-black/[0.08] px-5 py-4 rounded-[1.5rem] shadow-[0_20px_40px_rgba(0,0,0,0.1)] flex items-center gap-4 pointer-events-auto"
+            >
+              <div className={cn(
+                "w-10 h-10 rounded-full flex items-center justify-center shrink-0",
+                t.type === 'success' && "bg-green-100 text-green-600",
+                t.type === 'error' && "bg-red-100 text-red-600",
+                t.type === 'info' && "bg-blue-100 text-blue-600"
+              )}>
+                {t.type === 'success' && <TrendingUp className="w-5 h-5" />}
+                {t.type === 'error' && <TrendingDown className="w-5 h-5" />}
+                {t.type === 'info' && <Bell className="w-5 h-5" />}
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-black uppercase tracking-widest opacity-30 leading-none mb-1">
+                  {t.type === 'error' ? 'Warning' : 'System'}
+                </span>
+                <span className="text-[13px] font-semibold text-gray-800 leading-tight">{t.message}</span>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
       {/* Top Header */}
       <header className="h-16 border-b border-black/5 bg-white px-4 md:px-8 flex items-center justify-between shadow-sm z-20 shrink-0">
         <div className="flex items-center space-x-4 md:space-x-6">
@@ -577,31 +809,97 @@ export default function Game() {
       </header>
 
       <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        {/* Game Area */}
-        <div className="flex-1 flex items-center justify-center p-2 md:p-6 bg-[#f0f0f0] overflow-hidden relative">
-          <LayoutGroup>
-            <div className="relative aspect-square w-full max-w-[min(100vw,92vh,1100px)] bg-[#DAEED6] border-[16px] border-[#c1d9bc] rounded-2xl shadow-[0_60px_150px_rgba(0,0,0,0.2)] ring-1 ring-black/[0.1]">
-              <div className="grid grid-cols-11 grid-rows-11 h-full w-full p-2">
+        {/* Global Stats HUD (Top) */}
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] pointer-events-none flex items-center gap-4">
+             {currentPlayer && (
+                <div className="bg-white/95 backdrop-blur-3xl border border-black/[0.1] shadow-[0_40px_100px_rgba(0,0,0,0.1)] px-12 py-6 rounded-full flex items-center gap-16 pointer-events-auto">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-[.4em] font-black opacity-30 mb-2">CASH ON HAND</span>
+                      <span className="text-3xl font-mono font-black text-green-600">${currentPlayer.balance.toLocaleString()}</span>
+                    </div>
+                    <div className="w-px h-12 bg-black/10" />
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-[.4em] font-black opacity-30 mb-2">TOTAL NET WORTH</span>
+                      <span className="text-3xl font-mono font-black text-blue-600">${(currentPlayer.balance + Object.entries(playerStocks).reduce((acc, [s, a]) => {
+                        const stock = stocks.find(st => st.symbol === s);
+                        return acc + (stock?.price || 0) * (a as number);
+                      }, 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                </div>
+             )}
+        </div>
+        <div 
+          ref={scrollContainerRef}
+          className="flex-1 bg-[#e5e5e5] overflow-auto relative custom-scrollbar bg-[radial-gradient(#ccc_1px,transparent_1px)] [background-size:32px_32px]"
+        >
+          <div className="min-w-full min-h-full flex p-12 md:p-32">
+            <LayoutGroup>
+              <div 
+                className="relative transition-all duration-1000 ease-in-out shrink-0 m-auto" 
+                style={{ 
+                  width: `${2000 * zoom}px`,
+                  height: `${2000 * zoom}px`
+                }}
+              >
+                <div 
+                  className="absolute top-0 left-0 transition-transform duration-1000 ease-in-out" 
+                  style={{ 
+                    transform: `scale(${zoom})`,
+                    width: '2000px',
+                    height: '2000px',
+                    transformOrigin: '0 0'
+                  }}
+                >
+              <div className="absolute inset-0 bg-[#E8F3E6] border-[40px] border-[#c8e2c3] rounded-[6rem] shadow-[0_80px_200px_rgba(0,0,0,0.25)] ring-2 ring-black/[0.05] overflow-hidden">
+                {/* 3D City Center structures */}
+                <div className="absolute inset-[400px] pointer-events-none z-0 grid grid-cols-4 grid-rows-4 gap-8 p-12">
+                   {Array.from({ length: 16 }).map((_, i) => (
+                      <div key={i} className={cn(
+                        "rounded-2xl border border-black/5 shadow-xl relative overflow-hidden transition-all duration-1000",
+                        i % 3 === 0 ? "bg-[#DDEBDB]" : i % 2 === 0 ? "bg-[#CDE3CD]" : "bg-[#f5fbf5]"
+                      )}>
+                         <div className="absolute inset-0 opacity-10">
+                            {i % 4 === 0 ? <Building2 className="w-full h-full p-4" /> : i % 3 === 0 ? <Home className="w-full h-full p-6" /> : <Landmark className="w-full h-full p-8" />}
+                         </div>
+                         <div className="absolute top-0 left-0 w-full h-1 bg-white/20" />
+                         <div className="absolute bottom-0 left-0 w-full h-4 bg-black/5 flex gap-1 px-2 items-center">
+                            <div className="w-1 h-1 rounded-full bg-white/30" />
+                            <div className="w-1 h-1 rounded-full bg-white/30" />
+                         </div>
+                      </div>
+                   ))}
+                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03]">
+                      <h1 className="text-[25rem] font-serif italic text-black tracking-[0.2em] leading-none select-none">METROPOLIS</h1>
+                   </div>
+                </div>
+                <div className="grid grid-cols-[repeat(51,minmax(0,1fr))] grid-rows-[repeat(51,minmax(0,1fr))] h-full w-full p-4">
               {BOARD_SPACES.map((space) => {
                 const isCorner = space.type === 'corner';
                 let gridArea = "";
-                if (space.id === 0) gridArea = "11 / 11";
-                else if (space.id <= 9) gridArea = `11 / ${11 - space.id}`;
-                else if (space.id === 10) gridArea = "11 / 1";
-                else if (space.id <= 19) gridArea = `${11 - (space.id - 10)} / 1`;
-                else if (space.id === 20) gridArea = "1 / 1";
-                else if (space.id <= 29) gridArea = `1 / ${space.id - 19}`;
-                else if (space.id === 30) gridArea = "1 / 11";
-                else gridArea = `${space.id - 29} / 11`;
+                if (space.id === 0) gridArea = "51 / 51";
+                else if (space.id <= 49) gridArea = `51 / ${51 - space.id}`;
+                else if (space.id === 50) gridArea = "51 / 1";
+                else if (space.id <= 99) gridArea = `${51 - (space.id - 50)} / 1`;
+                else if (space.id === 100) gridArea = "1 / 1";
+                else if (space.id <= 149) gridArea = `1 / ${space.id - 99}`;
+                else if (space.id === 150) gridArea = "1 / 51";
+                else gridArea = `${space.id - 149} / 51`;
 
                 const ownership = properties.find(p => p.space_id === space.id);
                 const owner = ownership ? players.find(p => p.id === ownership.owner_id) : null;
+                const isSelected = currentPlayer?.position === space.id;
 
                 return (
-                  <div key={space.id} style={{ gridArea }} className={cn(
-                    "border-[0.5px] border-black/5 relative flex flex-col items-center bg-white transition-colors overflow-hidden group",
-                    isCorner && "bg-gray-50"
-                  )}>
+                  <div 
+                    key={space.id} 
+                    id={`space-${space.id}`}
+                    style={{ gridArea }} 
+                    className={cn(
+                      "border-[0.5px] border-black/10 relative flex flex-col items-center bg-white transition-all overflow-hidden group",
+                      isCorner && "bg-gray-100",
+                      isSelected && "ring-4 ring-blue-500 ring-inset z-20 shadow-2xl"
+                    )}
+                  >
                     {space.color && (
                       <div className={cn(
                         "absolute w-full h-[15%]", 
@@ -612,6 +910,14 @@ export default function Game() {
                       )} style={{ backgroundColor: space.color + 'dd' }} />
                     )}
                     
+                    {isCorner && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-[0.03]">
+                         {space.id === 0 && <Home className="w-48 h-48" />}
+                         {space.id === 50 && <Skull className="w-48 h-48" />}
+                         {space.id === 100 && <Plane className="w-48 h-48" />}
+                         {space.id === 150 && <Landmark className="w-48 h-48" />}
+                      </div>
+                    )}
                     <div className="z-10 p-0.5 md:p-1 flex flex-col items-center justify-center h-full w-full text-center">
                       <span className="text-[8px] md:text-[10px] font-bold uppercase tracking-tight text-gray-900 leading-tight">
                         {space.name}
@@ -620,8 +926,27 @@ export default function Game() {
                     </div>
 
                     {ownership && ownership.buildings > 0 && (
-                      <div className="absolute top-1 right-1 flex gap-0.5 bg-white/80 rounded-[1px] p-0.5 border border-black/5 shadow-sm">
-                        {Array.from({ length: ownership.buildings }).map((_, i) => <Building2 key={i} className={cn("w-1.5 h-1.5 md:w-2 md:h-2", i === 4 ? "text-red-500" : "text-blue-600")} />)}
+                      <div className="absolute inset-0 flex flex-col items-center justify-end p-2 pointer-events-none">
+                        <div className="flex gap-0.5 items-end h-full">
+                          {Array.from({ length: ownership.buildings }).map((_, i) => (
+                            <motion.div 
+                              key={i}
+                              initial={{ y: 20, opacity: 0 }}
+                              animate={{ y: 0, opacity: 1 }}
+                              className={cn(
+                                "w-2 md:w-4 rounded-t-sm shadow-sm border border-black/5",
+                                i === 4 ? "bg-red-500 h-[60%]" : "bg-blue-600 h-[40%]"
+                              )}
+                              style={{ 
+                                height: i === 4 ? '70%' : `${30 + (i * 10)}%`,
+                                backgroundColor: i === 4 ? '#ef4444' : '#2563eb'
+                              }}
+                            >
+                               <div className="w-full h-1 bg-white/20 mt-1" />
+                               <div className="w-full h-1 bg-white/10 mt-0.5" />
+                            </motion.div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -677,20 +1002,93 @@ export default function Game() {
                 );
               })}
 
-              {/* Center Dashboard */}
-              <div className="col-start-2 col-end-11 row-start-2 row-end-11 flex flex-col items-center justify-start pt-8 md:pt-16 p-4">
+              {/* Center Branding */}
+              <div className="col-start-2 col-end-50 row-start-2 row-end-50 flex flex-col items-center justify-center p-4">
                 <div className="text-center mb-8 md:mb-12">
-                   <h1 className="text-[5vw] lg:text-[5rem] font-serif italic text-black/[0.05] tracking-[0.1em] leading-none mb-1 md:mb-4 select-none">TYCOON</h1>
-                   <p className="text-[8px] md:text-[10px] uppercase tracking-[0.6em] opacity-30 font-black italic">Classic Edition</p>
+                   <h1 className="text-[15rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none select-none">TYCOON</h1>
                 </div>
 
-                {currentPlayer && (
-                  <div className="relative pointer-events-auto">
-                    <div className="relative bg-white/95 backdrop-blur-xl border border-black/5 p-5 md:p-12 rounded-3xl flex flex-col items-center min-w-[280px] md:min-w-[400px] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.03]">
-                      <div className="text-[10px] md:text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8 md:mb-12">YOUR TURN</div>
+                {/* Views are now in the global overlay */}
+                {currentPlayer && view === 'stocks' && (
+                  <div className="relative pointer-events-auto w-full max-w-4xl bg-white border border-black/10 p-12 rounded-3xl shadow-2xl flex flex-col gap-10">
+                    <div className="flex justify-between items-center">
+                      <div className="flex flex-col">
+                        <span className="text-sm uppercase tracking-[0.5em] font-black opacity-30">Global Market</span>
+                        <h2 className="text-4xl font-serif italic text-black">Exchange</h2>
+                      </div>
+                      <div className="bg-gray-50 border border-black/5 px-6 py-4 rounded-2xl flex flex-col items-end">
+                        <span className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Your Portfolio Value</span>
+                        <span className="text-xl font-mono font-black">${Object.entries(playerStocks).reduce((acc, [symbol, amount]) => {
+                          const stock = stocks.find(s => s.symbol === symbol);
+                          return acc + (stock?.price || 0) * (amount as number);
+                        }, 0).toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      {stocks.map(stock => (
+                        <div key={stock.symbol} className="bg-gray-50/50 border border-black/[0.03] p-8 rounded-2xl flex flex-col gap-6">
+                           <div className="flex justify-between items-start">
+                             <div className="flex items-center gap-4">
+                               <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center border border-black/5">
+                                 {stock.symbol === 'AMZN' && <Plane className="w-6 h-6 text-orange-500" />}
+                                 {stock.symbol === 'WDWS' && <Building2 className="w-6 h-6 text-blue-500" />}
+                                 {stock.symbol === 'META' && <Users className="w-6 h-6 text-blue-600" />}
+                                 {stock.symbol === 'EBAY' && <Briefcase className="w-6 h-6 text-red-500" />}
+                                 {stock.symbol === 'PEAR' && <MapPin className="w-6 h-6 text-gray-800" />}
+                               </div>
+                               <div>
+                                 <h3 className="text-lg font-black uppercase tracking-tight">{stock.name}</h3>
+                                 <span className="text-xs opacity-40 font-mono">{stock.symbol}</span>
+                               </div>
+                             </div>
+                             <div className="text-right">
+                               <span className="text-2xl font-mono font-black">${stock.price}</span>
+                               <div className={cn("text-[10px] font-black flex items-center justify-end gap-1", stock.change >= 0 ? "text-green-600" : "text-red-500")}>
+                                 {stock.change >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                                 {stock.change}%
+                               </div>
+                             </div>
+                           </div>
+
+                           <div className="h-32 w-full">
+                             <ResponsiveContainer width="100%" height="100%">
+                               <AreaChart data={stock.history}>
+                                 <defs>
+                                   <linearGradient id={`colorPrice-${stock.symbol}`} x1="0" y1="0" x2="0" y2="1">
+                                     <stop offset="5%" stopColor={stock.change >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0.3}/>
+                                     <stop offset="95%" stopColor={stock.change >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0}/>
+                                   </linearGradient>
+                                 </defs>
+                                 <Tooltip contentStyle={{ fontSize: '10px', borderRadius: '12px' }} />
+                                 <Area type="monotone" dataKey="price" stroke={stock.change >= 0 ? "#10b981" : "#ef4444"} fillOpacity={1} fill={`url(#colorPrice-${stock.symbol})`} />
+                               </AreaChart>
+                             </ResponsiveContainer>
+                           </div>
+
+                           <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/5">
+                             <div className="flex flex-col">
+                               <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Owned</span>
+                               <span className="text-lg font-mono font-black">{playerStocks[stock.symbol] || 0}</span>
+                             </div>
+                             <div className="flex gap-2">
+                               <button onClick={() => buyStock(stock.symbol, 1)} className="px-6 py-3 bg-black text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-zinc-800 transition-all">Buy $</button>
+                               <button onClick={() => sellStock(stock.symbol, 1)} className="px-6 py-3 border border-black/10 text-black text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-gray-100 transition-all">Sell $</button>
+                             </div>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {currentPlayer && view === 'board' && (
+                  <div className="relative pointer-events-auto scale-150 transform">
+                    <div className="relative bg-white border border-black/10 p-12 rounded-3xl flex flex-col items-center min-w-[500px] shadow-2xl">
+                      <div className="text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8">YOUR TURN</div>
                       
-                      <div className="flex gap-8 md:gap-12 mb-8 md:mb-14">
-                         <motion.div 
+                      <div className="flex gap-12 mb-14">
+                        <motion.div 
                           animate={rolling ? { 
                             rotateY: [0, 180, 360, 540, 720],
                             rotateX: [0, 90, 180, 270, 360],
@@ -738,11 +1136,50 @@ export default function Game() {
                     </div>
                   </div>
                 )}
+                {currentPlayer && view === 'transfer' && (
+                  <div className="relative pointer-events-auto w-full max-w-2xl bg-white border border-black/10 p-12 rounded-3xl shadow-2xl flex flex-col gap-10">
+                    <div className="flex flex-col">
+                      <span className="text-sm uppercase tracking-[0.5em] font-black opacity-30">Money</span>
+                      <h2 className="text-4xl font-serif italic text-black">Transfer</h2>
+                    </div>
+
+                    <div className="space-y-4 pt-4">
+                      {players.filter(p => p.id !== currentPlayer.id).map(p => (
+                        <div key={p.id} className="flex items-center justify-between p-6 bg-gray-50 border border-black/5 rounded-2xl group hover:border-blue-500/30 transition-all">
+                           <div className="flex items-center gap-4">
+                             <div className="w-12 h-12 rounded-xl flex items-center justify-center text-lg font-mono shadow-sm" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
+                               {p.name.charAt(0)}
+                             </div>
+                             <div className="flex flex-col">
+                               <span className="text-sm font-black uppercase tracking-tight">{p.name}</span>
+                               <span className="text-[10px] opacity-40 uppercase tracking-widest font-bold">Account Holder</span>
+                             </div>
+                           </div>
+                           <div className="flex gap-4">
+                             {[100, 500, 1000].map(amt => (
+                               <button 
+                                 key={amt}
+                                 onClick={() => transferMoney(p.id, amt)}
+                                 disabled={currentPlayer.balance < amt}
+                                 className="px-4 py-2 bg-white border border-black/10 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black hover:text-white transition-all disabled:opacity-20"
+                               >
+                                 + ${amt}
+                               </button>
+                             ))}
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
-        </LayoutGroup>
         </div>
+      </div>
+      </LayoutGroup>
+    </div>
+  </div>
 
         {/* Sidebar Controls */}
         <aside className={cn(
@@ -902,6 +1339,58 @@ export default function Game() {
           </div>
         </aside>
       </main>
+
+      {/* Navigation HUD (Floating at bottom of screen) */}
+      <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black/90 backdrop-blur-2xl rounded-3xl p-3 border border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.5)] gap-6 pointer-events-auto scale-90 md:scale-100">
+          <div className="flex border-r border-white/10 pr-4 gap-2">
+            <button 
+              onClick={() => setZoom(prev => Math.min(2, prev + 0.1))}
+              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              title="Zoom In"
+            >
+              <TrendingUp className="w-5 h-5 text-green-400" />
+            </button>
+            <button 
+              onClick={() => setZoom(prev => Math.max(0.1, prev - 0.1))}
+              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              title="Zoom Out"
+            >
+                <TrendingDown className="w-5 h-5 text-red-400" />
+            </button>
+            <button 
+              onClick={() => setIsFollowing(!isFollowing)}
+              className={cn(
+                "p-3 rounded-2xl transition-all flex items-center gap-2",
+                isFollowing ? "bg-blue-600 text-white" : "text-white/40 hover:text-white"
+              )}
+              title="Toggle Follow Player"
+            >
+              <MapPin className="w-5 h-5" />
+              <span className="text-[10px] uppercase tracking-widest font-black">{isFollowing ? 'ON' : 'OFF'}</span>
+            </button>
+          </div>
+
+          <div className="flex gap-2">
+            {[
+              { id: 'board', icon: Home, label: 'Map' },
+              { id: 'stocks', icon: TrendingUp, label: 'Market' },
+              { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
+              { id: 'stats', icon: Users, label: 'Network' }
+            ].map(v => (
+              <button 
+                key={v.id}
+                onClick={() => setView(v.id as any)}
+                className={cn(
+                  "px-6 py-4 rounded-2xl flex items-center gap-4 transition-all group",
+                  view === v.id ? "bg-white text-black font-black" : "text-white/40 hover:text-white"
+                )}
+              >
+                <v.icon className="w-5 h-5 transition-transform group-hover:scale-110" />
+                <span className="text-[11px] uppercase tracking-widest leading-none font-black">{v.label}</span>
+              </button>
+            ))}
+          </div>
+      </div>
 
       {/* Marquee Footer */}
       <footer className="h-10 bg-white border-t border-black/5 flex items-center px-6 overflow-hidden shrink-0">
