@@ -256,7 +256,8 @@ export default function Game() {
       if (!isFollowing) {
         const vh = window.innerHeight;
         const vw = window.innerWidth;
-        const size = Math.min(vw * 0.8, vh * 0.8);
+        const isMobile = vw < 768;
+        const size = Math.min(vw * (isMobile ? 1.5 : 0.8), vh * (isMobile ? 1.5 : 0.8));
         setZoom(size / 2000);
       }
     };
@@ -1141,328 +1142,273 @@ export default function Game() {
                 <div className="text-center mb-8 md:mb-12">
                    <h1 className="text-[15rem] font-serif italic text-black/[0.03] tracking-[0.2em] leading-none select-none">TYCOON</h1>
                 </div>
-
-                {/* Views are now in the global overlay */}
-                {currentPlayer && view === 'stocks' && (
-                  <div className="relative pointer-events-auto w-full max-w-4xl bg-white border border-black/10 p-12 rounded-3xl shadow-2xl flex flex-col gap-10">
-                    <div className="flex justify-between items-center">
-                      <div className="flex flex-col">
-                        <span className="text-sm uppercase tracking-[0.5em] font-black opacity-30">Global Market</span>
-                        <h2 className="text-4xl font-serif italic text-black">Exchange</h2>
-                      </div>
-                      <div className="bg-gray-50 border border-black/5 px-6 py-4 rounded-2xl flex flex-col items-end">
-                        <span className="text-[10px] uppercase tracking-widest opacity-40 font-bold">Your Portfolio Value</span>
-                        <span className="text-xl font-mono font-black">${Object.entries(playerStocks).reduce((acc, [symbol, amount]) => {
-                          const stock = stocks.find(s => s.symbol === symbol);
-                          return acc + (stock?.price || 0) * (amount as number);
-                        }, 0).toFixed(2)}</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      {stocks.map(stock => (
-                        <div key={stock.symbol} className="bg-gray-50/50 border border-black/[0.03] p-8 rounded-2xl flex flex-col gap-6">
-                           <div className="flex justify-between items-start">
-                             <div className="flex items-center gap-4">
-                               <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center border border-black/5">
-                                 {stock.symbol === 'AMZN' && <Plane className="w-6 h-6 text-orange-500" />}
-                                 {stock.symbol === 'WDWS' && <Building2 className="w-6 h-6 text-blue-500" />}
-                                 {stock.symbol === 'META' && <Users className="w-6 h-6 text-blue-600" />}
-                                 {stock.symbol === 'EBAY' && <Briefcase className="w-6 h-6 text-red-500" />}
-                                 {stock.symbol === 'PEAR' && <MapPin className="w-6 h-6 text-gray-800" />}
-                               </div>
-                               <div>
-                                 <h3 className="text-lg font-black uppercase tracking-tight">{stock.name}</h3>
-                                 <span className="text-xs opacity-40 font-mono">{stock.symbol}</span>
-                               </div>
-                             </div>
-                             <div className="text-right">
-                               <span className="text-2xl font-mono font-black">${stock.price}</span>
-                               <div className={cn("text-[10px] font-black flex items-center justify-end gap-1", stock.change >= 0 ? "text-green-600" : "text-red-500")}>
-                                 {stock.change >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                                 {stock.change}%
-                               </div>
-                             </div>
-                           </div>
-
-                           <div className="h-32 w-full">
-                             <ResponsiveContainer width="100%" height="100%">
-                               <AreaChart data={stock.history}>
-                                 <defs>
-                                   <linearGradient id={`colorPrice-${stock.symbol}`} x1="0" y1="0" x2="0" y2="1">
-                                     <stop offset="5%" stopColor={stock.change >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0.3}/>
-                                     <stop offset="95%" stopColor={stock.change >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0}/>
-                                   </linearGradient>
-                                 </defs>
-                                 <Tooltip contentStyle={{ fontSize: '10px', borderRadius: '12px' }} />
-                                 <Area type="monotone" dataKey="price" stroke={stock.change >= 0 ? "#10b981" : "#ef4444"} fillOpacity={1} fill={`url(#colorPrice-${stock.symbol})`} />
-                               </AreaChart>
-                             </ResponsiveContainer>
-                           </div>
-
-                           <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/5">
-                             <div className="flex flex-col">
-                               <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Owned</span>
-                               <span className="text-lg font-mono font-black">{playerStocks[stock.symbol] || 0}</span>
-                             </div>
-                             <div className="flex gap-2">
-                               <button onClick={() => buyStock(stock.symbol, 1)} className="px-6 py-3 bg-black text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-zinc-800 transition-all">Buy $</button>
-                               <button onClick={() => sellStock(stock.symbol, 1)} className="px-6 py-3 border border-black/10 text-black text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-gray-100 transition-all">Sell $</button>
-                             </div>
-                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {currentPlayer && view === 'board' && (
-                  <div className="relative pointer-events-none w-full h-full">
-                    {/* Map is empty here, dice moved to global overlay */}
-                  </div>
-                )}
-                {currentPlayer && view === 'transfer' && (
-                  <div className="relative pointer-events-auto w-full max-w-2xl bg-white border border-black/10 p-12 rounded-3xl shadow-2xl flex flex-col gap-10">
-                    <div className="flex flex-col">
-                      <span className="text-sm uppercase tracking-[0.5em] font-black opacity-30">Money</span>
-                      <h2 className="text-4xl font-serif italic text-black">Transfer</h2>
-                    </div>
-
-                    <div className="space-y-4 pt-4">
-                      {players.filter(p => p.id !== currentPlayer.id).map(p => (
-                        <div key={p.id} className="flex items-center justify-between p-6 bg-gray-50 border border-black/5 rounded-2xl group hover:border-blue-500/30 transition-all">
-                           <div className="flex items-center gap-4">
-                             <div className="w-12 h-12 rounded-xl flex items-center justify-center text-lg font-mono shadow-sm" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
-                               {p.name.charAt(0)}
-                             </div>
-                             <div className="flex flex-col">
-                               <span className="text-sm font-black uppercase tracking-tight">{p.name}</span>
-                               <span className="text-[10px] opacity-40 uppercase tracking-widest font-bold">Account Holder</span>
-                             </div>
-                           </div>
-                           <div className="flex gap-4">
-                             {[100, 500, 1000].map(amt => (
-                               <button 
-                                 key={amt}
-                                 onClick={() => transferMoney(p.id, amt)}
-                                 disabled={currentPlayer.balance < amt}
-                                 className="px-4 py-2 bg-white border border-black/10 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black hover:text-white transition-all disabled:opacity-20"
-                               >
-                                 + ${amt}
-                               </button>
-                             ))}
-                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           </div>
         </div>
-      </div>
+        </div>
       </LayoutGroup>
     </div>
   </div>
 
         {/* Sidebar Controls */}
         <aside className={cn(
-          "fixed inset-y-0 right-0 z-30 w-full md:w-[320px] lg:w-[400px] bg-white border-l border-black/5 flex flex-col shadow-2xl p-4 md:p-10 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:shadow-none",
-          showSidebar ? "translate-x-0" : "translate-x-full"
+          "bg-white border-b md:border-r border-black/5 flex flex-col transition-all duration-500 ease-in-out shrink-0",
+          "fixed inset-0 z-[140] w-full md:relative md:inset-auto md:w-[400px] md:z-0",
+          showSidebar ? "translate-x-0" : "-translate-x-full md:translate-x-0 md:w-0 overflow-hidden border-none"
         )}>
-          <div className="flex justify-between items-center md:hidden mb-6">
-             <span className="text-xs font-black uppercase tracking-widest opacity-30">Game Menu</span>
-             <button onClick={() => setShowSidebar(false)}><X className="w-6 h-6" /></button>
+          {/* Mobile Close Button */}
+          <div className="md:hidden absolute top-6 right-6 z-10">
+            <button onClick={() => { setShowSidebar(false); setView('board'); }} className="w-10 h-10 bg-black text-white rounded-full flex items-center justify-center">
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <div className="flex-1 flex flex-col gap-8 md:gap-12 overflow-y-auto custom-scrollbar">
-            {/* Reserves & Context */}
-            <div className="space-y-6">
-               <div className="flex justify-between items-end border-b border-black/5 pb-2">
-                 <span className="text-[10px] uppercase tracking-widest font-black opacity-20">Location Info</span>
-                 <span className="text-xs font-serif italic text-gray-600">{BOARD_SPACES[currentPlayer?.position || 0].name} ({BOARD_SPACES[currentPlayer?.position || 0].type})</span>
-               </div>
-               
-               <div className="bg-gray-50/80 border border-black/[0.03] p-6 rounded-[1px] relative">
-                 <div className="flex flex-col gap-1">
-                   <span className="text-[8px] uppercase tracking-widest opacity-40 font-black">Cash Balance</span>
-                   <span className="text-4xl font-mono text-black font-black tracking-tight">${currentPlayer?.balance.toLocaleString()}</span>
-                 </div>
-                 <div className="mt-4 flex flex-col gap-1.5">
-                    <div className="flex justify-between items-center text-[9px] uppercase font-black opacity-30 tracking-widest">
-                       <span>Daily Bonus</span>
-                       <span>Daily</span>
-                    </div>
-                    <div className="w-full h-0.5 bg-gray-200 rounded-full overflow-hidden">
-                       <div className="h-full bg-amber-500 w-[60%]" />
-                    </div>
-                 </div>
-                 <button 
-                  onClick={() => {
-                    setIsJoined(false);
-                    setCurrentPlayer(null);
-                    setPlayerName('');
-                    setShowSidebar(false);
-                  }}
-                  className="mt-6 w-full py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                >
-                  <X className="w-4 h-4" /> Switch Player
-                </button>
-               </div>
-            </div>
+          <div className="flex-1 flex flex-col p-6 md:p-10 overflow-y-auto custom-scrollbar">
+            {view === 'board' && (
+              <div className="flex-1 flex flex-col gap-8 md:gap-12">
+                {/* Reserves & Context */}
+                <div className="space-y-6">
+                   <div className="flex justify-between items-end border-b border-black/5 pb-2">
+                     <span className="text-[10px] uppercase tracking-widest font-black opacity-20">Location Info</span>
+                     <span className="text-xs font-serif italic text-gray-600">{BOARD_SPACES[currentPlayer?.position || 0].name} ({BOARD_SPACES[currentPlayer?.position || 0].type})</span>
+                   </div>
+                   
+                   <div className="bg-gray-50/80 border border-black/[0.03] p-6 rounded-[1px] relative">
+                     <div className="flex flex-col gap-1">
+                       <span className="text-[8px] uppercase tracking-widest opacity-40 font-black">Cash Balance</span>
+                       <span className="text-4xl font-mono text-black font-black tracking-tight">${currentPlayer?.balance.toLocaleString()}</span>
+                     </div>
+                     <div className="mt-4 flex flex-col gap-1.5">
+                        <div className="flex justify-between items-center text-[9px] uppercase font-black opacity-30 tracking-widest">
+                           <span>Daily Bonus</span>
+                           <span>Daily</span>
+                        </div>
+                        <div className="w-full h-0.5 bg-gray-200 rounded-full overflow-hidden">
+                           <div className="h-full bg-amber-500 w-[60%]" />
+                        </div>
+                     </div>
+                     <button 
+                      onClick={() => {
+                        setIsJoined(false);
+                        setCurrentPlayer(null);
+                        setPlayerName('');
+                        setShowSidebar(false);
+                      }}
+                      className="mt-6 w-full py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
+                    >
+                      <X className="w-4 h-4" /> Switch Player
+                    </button>
+                   </div>
+                </div>
 
-            {/* Location Interaction */}
-            {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
-              <div className="space-y-6">
-                <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Property Actions</div>
-                <div className="p-5 bg-gray-50 border border-black/[0.03] rounded-xl space-y-4">
-                  <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-tight">
-                    <span className="opacity-40">Group</span>
-                    <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{BOARD_SPACES[currentPlayer.position].color || 'Infrastructure'}</span>
-                  </div>
-                  
-                  <div className="space-y-3">
-                    {!properties.find(p => p.space_id === currentPlayer.position) ? (
-                      <button 
-                        onClick={() => buyProperty(currentPlayer.position)} 
-                        disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
-                        className="w-full py-5 bg-black text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-blue-600 transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
-                      >
-                        BUY · ${BOARD_SPACES[currentPlayer.position].price}
-                      </button>
-                    ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
-                      <button 
-                        onClick={() => buildHouse(currentPlayer.position)} 
-                        disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
-                        className="w-full py-5 bg-blue-600 text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-black transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
-                      >
-                        <Building2 className="w-5 h-5" /> BUILD (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
-                      </button>
-                    ) : (
-                      <div className="py-8 bg-white border border-gray-100 rounded-xl flex flex-col items-center justify-center gap-2">
-                        <Landmark className="w-8 h-8 opacity-10" />
-                        <span className="text-[10px] uppercase tracking-widest opacity-30 font-black italic">Owned by someone else</span>
+                {/* Location Interaction */}
+                {currentPlayer && BOARD_SPACES[currentPlayer.position].type === 'property' && (
+                  <div className="space-y-6">
+                    <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Property Actions</div>
+                    <div className="p-5 bg-gray-50 border border-black/[0.03] rounded-xl space-y-4">
+                      <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-tight">
+                        <span className="opacity-40">Group</span>
+                        <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{BOARD_SPACES[currentPlayer.position].color || 'Infrastructure'}</span>
                       </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Asset Portfolio */}
-            {currentPlayer && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">MY PROPERTIES</div>
-                  <div className="text-[9px] font-mono font-bold opacity-30">
-                    {properties.filter(p => p.owner_id === currentPlayer.id).length} PROPERTIES
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-2">
-                  {properties.filter(p => p.owner_id === currentPlayer.id).map(prop => {
-                    const space = BOARD_SPACES[prop.space_id];
-                    return (
-                      <div key={prop.space_id} className="flex items-center justify-between p-3 bg-white border border-black/[0.03] rounded-xl hover:border-blue-600/30 transition-all group relative overflow-hidden">
-                        <div className="flex items-center gap-3">
-                          <div className="w-2 h-8 rounded-full" style={{ backgroundColor: space.color || '#cbd5e1' }} />
-                          <div className="flex flex-col">
-                            <span className="text-[10px] font-black uppercase tracking-tight text-gray-800">{space.name}</span>
-                            <div className="flex gap-1 mt-0.5">
-                              {[...Array(prop.buildings)].map((_, i) => (
-                                <div key={i} className="w-1.5 h-1.5 bg-green-600 rounded-full" />
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-[9px] font-mono font-bold opacity-30 text-right">
-                            VAL: ${space.price}<br/>
-                            SELL: ${Math.floor((space.price || 0) / 2)}
-                          </div>
+                      
+                      <div className="space-y-3">
+                        {!properties.find(p => p.space_id === currentPlayer.position) ? (
                           <button 
-                            onClick={(e) => { e.stopPropagation(); sellProperty(prop.space_id); }}
-                            className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors md:opacity-0 group-hover:opacity-100"
-                            title="Sell Property"
+                            onClick={() => buyProperty(currentPlayer.position)} 
+                            disabled={currentPlayer.balance < (BOARD_SPACES[currentPlayer.position].price || 0)} 
+                            className="w-full py-5 bg-black text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-blue-600 transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
                           >
-                            <X className="w-4 h-4" />
+                            BUY · ${BOARD_SPACES[currentPlayer.position].price}
                           </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {properties.filter(p => p.owner_id === currentPlayer.id).length === 0 && (
-                    <div className="py-6 border-2 border-dashed border-black/[0.03] rounded-xl flex items-center justify-center">
-                      <span className="text-[9px] uppercase tracking-[0.2em] font-black opacity-10 italic">No properties yet</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Friends list */}
-            {currentPlayer && friends.length > 0 && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Network Contacts</div>
-                  <div className="text-[10px] font-black text-green-600/50">{friends.filter(f => f.status === 'accepted').length} FRIENDS</div>
-                </div>
-                <div className="space-y-2">
-                  {friends.map(f => {
-                    const friendId = f.sender_id === currentPlayer.id ? f.receiver_id : f.sender_id;
-                    const friend = players.find(p => p.id === friendId);
-                    if (!friend) return null;
-                    return (
-                      <div 
-                        key={f.id} 
-                        onClick={() => setSelectedProfile(friend)}
-                        className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-2xl hover:border-blue-600/30 transition-all group cursor-pointer"
-                      >
-                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-[10px] font-mono shadow-sm" style={{ backgroundColor: friend.player_color + '22', color: friend.player_color }}>
-                          {friend.name.charAt(0)}
-                        </div>
-                        <div className="flex-1">
-                          <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{friend.name}</div>
-                          <div className="text-[8px] uppercase tracking-widest opacity-40 font-bold">
-                            {f.status === 'pending' ? 'Request Sent' : 'Online'}
-                          </div>
-                        </div>
-                        {f.status === 'pending' && f.receiver_id === currentPlayer.id && (
+                        ) : properties.find(p => p.space_id === currentPlayer.position)?.owner_id === currentPlayer.id ? (
                           <button 
-                            onClick={(e) => { e.stopPropagation(); acceptFriendRequest(f.id); }}
-                            className="text-[8px] bg-blue-600 text-white px-2 py-1 rounded font-black uppercase tracking-widest hover:bg-black transition-all"
+                            onClick={() => buildHouse(currentPlayer.position)} 
+                            disabled={currentPlayer.balance < Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5) || (properties.find(p => p.space_id === currentPlayer.position)?.buildings || 0) >= 5} 
+                            className="w-full py-5 bg-blue-600 text-white font-black uppercase text-xs tracking-[0.2em] hover:bg-black transition-all disabled:opacity-20 rounded-xl shadow-xl flex items-center justify-center gap-3"
                           >
-                            Accept
+                            <Building2 className="w-5 h-5" /> BUILD (${Math.floor((BOARD_SPACES[currentPlayer.position].price || 100) * 0.5)})
                           </button>
+                        ) : (
+                          <div className="py-8 bg-white border border-gray-100 rounded-xl flex flex-col items-center justify-center gap-2">
+                            <Landmark className="w-8 h-8 opacity-10" />
+                            <span className="text-[10px] uppercase tracking-widest opacity-30 font-black italic">Owned by someone else</span>
+                          </div>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Asset Portfolio */}
+                {currentPlayer && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] uppercase tracking-widest font-black opacity-20">MY PROPERTIES</div>
+                      <div className="text-[9px] font-mono font-bold opacity-30">
+                        {properties.filter(p => p.owner_id === currentPlayer.id).length} PROPERTIES
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {properties.filter(p => p.owner_id === currentPlayer.id).map(prop => {
+                        const space = BOARD_SPACES[prop.space_id];
+                        return (
+                          <div key={prop.space_id} className="flex items-center justify-between p-3 bg-white border border-black/[0.03] rounded-xl hover:border-blue-600/30 transition-all group relative overflow-hidden">
+                            <div className="flex items-center gap-3">
+                              <div className="w-2 h-8 rounded-full" style={{ backgroundColor: space.color || '#cbd5e1' }} />
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-black uppercase tracking-tight text-gray-800">{space.name}</span>
+                                <div className="flex gap-1 mt-0.5">
+                                  {[...Array(prop.buildings)].map((_, i) => (
+                                    <div key={i} className="w-1.5 h-1.5 bg-green-600 rounded-full" />
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="text-[9px] font-mono font-bold opacity-30 text-right">
+                                VAL: ${space.price}<br/>
+                                SELL: ${Math.floor((space.price || 0) / 2)}
+                              </div>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); sellProperty(prop.space_id); }}
+                                className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors md:opacity-0 group-hover:opacity-100"
+                                title="Sell Property"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {properties.filter(p => p.owner_id === currentPlayer.id).length === 0 && (
+                        <div className="py-6 border-2 border-dashed border-black/[0.03] rounded-xl flex items-center justify-center">
+                          <span className="text-[9px] uppercase tracking-[0.2em] font-black opacity-10 italic">No properties yet</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Scoreboard */}
+                {currentPlayer && (
+                  <div className="flex-1 flex flex-col">
+                    <div className="flex items-center justify-between mb-4">
+                       <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Scoreboard</div>
+                       <div className="text-[10px] font-black text-blue-600/50">{players.length} PLAYER(S)</div>
+                    </div>
+                    <div className="space-y-2 pb-4">
+                      {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
+                        <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group cursor-pointer" onClick={() => setSelectedProfile(p)}>
+                          <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
+                          <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
+                          <div className="flex-1">
+                            <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
+                            <div className="text-[9px] font-mono font-bold opacity-30">${p.balance.toLocaleString()}</div>
+                          </div>
+                          {p.id === currentPlayer?.id && (
+                             <span className="text-[7px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Self</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* leaderboard */}
-            <div className="flex-1 flex flex-col">
-              <div className="flex items-center justify-between mb-4">
-                 <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Scoreboard</div>
-                 <div className="text-[10px] font-black text-blue-600/50">{players.length} PLAYER(S)</div>
-              </div>
-              <div className="space-y-2 pb-4">
-                {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
-                  <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group cursor-pointer" onClick={() => setSelectedProfile(p)}>
-                    <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
-                    <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
-                    <div className="flex-1">
-                      <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
-                      <div className="text-[9px] font-mono font-bold opacity-30">${p.balance.toLocaleString()}</div>
+            {view === 'stocks' && (
+              <div className="flex-1 flex flex-col gap-6">
+                <div className="flex justify-between items-center">
+                   <h2 className="text-xl font-serif italic">Global Markets</h2>
+                   <TrendingUp className="text-green-500 w-5 h-5" />
+                </div>
+                {stocks.map(s => (
+                  <div key={s.symbol} className="bg-gray-50 border border-black/[0.03] p-4 rounded-2xl flex flex-col gap-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest opacity-30">{s.symbol}</div>
+                        <div className="text-sm font-bold uppercase">{s.name}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-mono font-black">${s.price.toFixed(2)}</div>
+                        <div className={cn("text-[10px] font-bold", s.change >= 0 ? "text-green-600" : "text-red-600")}>
+                          {s.change >= 0 ? '+' : ''}{s.change}%
+                        </div>
+                      </div>
                     </div>
-                    {p.id === currentPlayer?.id && (
-                       <span className="text-[7px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Self</span>
+                    <div className="h-16 w-full">
+                       <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={s.history}>
+                             <Area type="monotone" dataKey="price" stroke={s.change >= 0 ? '#16a34a' : '#dc2626'} fill={s.change >= 0 ? '#dcfce7' : '#fee2e2'} />
+                          </AreaChart>
+                       </ResponsiveContainer>
+                    </div>
+                    <div className="flex gap-2">
+                       <button onClick={() => buyStock(s.symbol, 1)} className="flex-1 py-2 bg-black text-white text-[10px] font-black uppercase rounded-lg">Buy 1</button>
+                       <button onClick={() => sellStock(s.symbol, 1)} className="flex-1 py-2 bg-gray-200 text-black text-[10px] font-black uppercase rounded-lg">Sell 1</button>
+                    </div>
+                    {playerStocks[s.symbol] > 0 && (
+                      <div className="text-[9px] font-black uppercase tracking-widest opacity-40 text-center">Owned: {playerStocks[s.symbol]}</div>
                     )}
                   </div>
                 ))}
               </div>
-            </div>
+            )}
+
+            {view === 'transfer' && (
+               <div className="flex-1 flex flex-col gap-8">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-xl font-serif italic">Money Transfer</h2>
+                    <ArrowRightLeft className="text-blue-600 w-5 h-5" />
+                  </div>
+                  <div className="space-y-4">
+                    {players.filter(p => p.id !== currentPlayer?.id).map(p => (
+                      <div key={p.id} className="bg-gray-50 border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between">
+                         <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full" style={{ backgroundColor: p.player_color }} />
+                            <span className="text-[11px] font-black uppercase">{p.name}</span>
+                         </div>
+                         <div className="flex gap-1">
+                            {[100, 500].map(amt => (
+                               <button 
+                                 key={amt}
+                                 onClick={() => transferMoney(p.id, amt)}
+                                 className="px-2 py-1 bg-white border border-black/5 text-[9px] font-black rounded-lg"
+                               >
+                                 +${amt}
+                               </button>
+                            ))}
+                         </div>
+                      </div>
+                    ))}
+                  </div>
+               </div>
+            )}
+
+            {view === 'stats' && (
+               <div className="flex-1 flex flex-col gap-8">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-xl font-serif italic">Network Contacts</h2>
+                    <Users className="text-blue-600 w-5 h-5" />
+                  </div>
+                  {/* Reuse the social list but bigger */}
+                  <div className="space-y-4">
+                    {players.map(p => (
+                      <div key={p.id} onClick={() => setSelectedProfile(p)} className="bg-white border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between cursor-pointer hover:border-blue-200 transition-all">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
+                             <div className="w-full h-full flex items-center justify-center font-mono font-black">{p.name.charAt(0)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-black uppercase">{p.name}</div>
+                            <div className="text-[9px] font-mono opacity-40">${p.balance.toLocaleString()}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+               </div>
+            )}
           </div>
         </aside>
       </main>
@@ -1583,10 +1529,10 @@ export default function Game() {
       <AnimatePresence>
         {showChat && (
           <motion.div 
-            initial={{ opacity: 0, x: -50, scale: 0.95 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: -50, scale: 0.95 }}
-            className="fixed top-24 left-8 z-[120] w-80 h-[500px] bg-white rounded-[2rem] border border-black/10 shadow-[0_30px_90px_rgba(0,0,0,0.2)] flex flex-col overflow-hidden"
+            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 50, scale: 0.95 }}
+            className="fixed bottom-28 left-4 right-4 md:left-8 md:bottom-auto md:top-24 md:w-80 h-[400px] md:h-[500px] bg-white rounded-[2rem] border border-black/10 shadow-[0_30px_90px_rgba(0,0,0,0.2)] flex flex-col overflow-hidden z-[120]"
           >
             <div className="p-6 border-b border-black/5 bg-gray-50 flex justify-between items-center">
               <div className="flex flex-col">
@@ -1631,7 +1577,7 @@ export default function Game() {
                 placeholder="Message Tycoons..."
                 className="flex-1 bg-white border border-black/10 rounded-xl px-4 py-2 text-[12px] outline-none focus:border-blue-500 transition-all font-medium"
               />
-              <button className="w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center hover:bg-blue-600 transition-all active:scale-95 shadow-lg">
+              <button className="w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center hover:bg-blue-600 transition-all active:scale-95 shadow-lg shrink-0">
                 <Send className="w-4 h-4" />
               </button>
             </form>
@@ -1639,22 +1585,23 @@ export default function Game() {
         )}
       </AnimatePresence>
 
-      <div className="fixed top-24 left-10 z-[110]">
+      <div className="fixed top-24 right-6 z-[110] md:top-24 md:left-10">
         <button 
           onClick={() => setShowChat(!showChat)}
           className={cn(
-            "w-16 h-16 rounded-2xl flex items-center justify-center shadow-2xl transition-all active:scale-90 relative",
+            "w-12 h-12 md:w-16 md:h-16 rounded-2xl flex items-center justify-center shadow-2xl transition-all active:scale-90 relative",
             showChat ? "bg-black text-white" : "bg-white text-black hover:bg-gray-50 border border-black/10"
           )}
         >
-          <Briefcase className="w-6 h-6" />
+          <Briefcase className="w-5 h-5 md:w-6 md:h-6" />
           {messages.length > 0 && !showChat && (
-            <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-600 rounded-full border-2 border-white flex items-center justify-center text-[8px] text-white font-black">
+            <div className="absolute -top-1 -right-1 w-4 h-4 md:w-5 md:h-5 bg-blue-600 rounded-full border-2 border-white flex items-center justify-center text-[8px] text-white font-black">
               !
             </div>
           )}
         </button>
       </div>
+
 
       {/* Fixed Dice Roll Area (Always Visible) */}
       <AnimatePresence>
@@ -1662,46 +1609,53 @@ export default function Game() {
           <motion.div 
             initial={{ x: 300 }}
             animate={{ x: 0 }}
-            className="fixed bottom-32 right-8 z-[90] flex flex-col items-center gap-4 pointer-events-auto"
+            className="fixed bottom-28 right-4 md:bottom-32 md:right-8 z-[90] flex flex-col items-center gap-4 pointer-events-auto"
           >
             <motion.div 
               animate={rolling ? { 
-                rotateY: [0, 360],
+                rotate: [0, 360],
                 rotateX: [0, 360],
-                scale: [1, 1.2, 1],
+                scale: [1, 1.1, 1],
               } : {}}
               transition={{ duration: 0.3, repeat: rolling ? Infinity : 0 }}
-              className="w-40 h-24 bg-white border border-black/10 rounded-3xl shadow-2xl flex items-center justify-center gap-4 relative overflow-hidden"
+              className="w-32 h-20 md:w-40 md:h-24 bg-white border border-black/10 rounded-3xl shadow-2xl flex flex-col items-center justify-center relative overflow-hidden"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white to-gray-50 opacity-50" />
-              {diceVisual.map((v, i) => (
-                <div key={i} className="relative z-10 text-blue-600">
-                  {v === 1 && <Dice1 className="w-10 h-10" />}
-                  {v === 2 && <Dice2 className="w-10 h-10" />}
-                  {v === 3 && <Dice3 className="w-10 h-10" />}
-                  {v === 4 && <Dice4 className="w-10 h-10" />}
-                  {v === 5 && <Dice5 className="w-10 h-10" />}
-                  {v === 6 && <Dice6 className="w-10 h-10" />}
+              <div className="flex gap-3 md:gap-4 items-center">
+                {diceVisual.map((v, i) => (
+                  <div key={i} className="relative z-10 text-blue-600">
+                    {v === 1 && <Dice1 className="w-8 h-8 md:w-10 md:h-10" />}
+                    {v === 2 && <Dice2 className="w-8 h-8 md:w-10 md:h-10" />}
+                    {v === 3 && <Dice3 className="w-8 h-8 md:w-10 md:h-10" />}
+                    {v === 4 && <Dice4 className="w-8 h-8 md:w-10 md:h-10" />}
+                    {v === 5 && <Dice5 className="w-8 h-8 md:w-10 md:h-10" />}
+                    {v === 6 && <Dice6 className="w-8 h-8 md:w-10 md:h-10" />}
+                  </div>
+                ))}
+              </div>
+              {!rolling && (
+                <div className="mt-1 text-[10px] font-black text-blue-600 opacity-50 font-mono">
+                  SUM: {diceVisual[0] + diceVisual[1]}
                 </div>
-              ))}
+              )}
             </motion.div>
 
             <button 
               onClick={rollDice}
               disabled={rolling}
-              className="group relative flex flex-col items-center justify-center w-28 h-28 bg-blue-600 hover:bg-black text-white rounded-[2.5rem] shadow-[0_25px_60px_rgba(37,99,235,0.45)] transition-all active:scale-90 disabled:opacity-50 disabled:grayscale border-4 border-white/20"
+              className="group relative flex flex-col items-center justify-center w-20 h-20 md:w-28 md:h-28 bg-blue-600 hover:bg-black text-white rounded-[2rem] md:rounded-[2.5rem] shadow-[0_25px_60px_rgba(37,99,235,0.45)] transition-all active:scale-90 disabled:opacity-50 disabled:grayscale border-4 border-white/20"
             >
               <div className="absolute inset-0 bg-gradient-to-tr from-white/10 to-transparent pointer-events-none" />
               {rolling ? (
                  <div className="flex gap-1.5">
-                    <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
-                    <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.1s]" />
-                    <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
+                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce" />
+                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce [animation-delay:0.1s]" />
+                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
                  </div>
               ) : (
                 <>
-                  <Dices className="w-10 h-10 mb-1 group-hover:rotate-12 transition-transform drop-shadow-lg" />
-                  <span className="text-[11px] font-black tracking-[0.2em]">ROLL</span>
+                  <Dices className="w-8 h-8 md:w-10 md:h-10 mb-1 group-hover:rotate-12 transition-transform drop-shadow-lg" />
+                  <span className="text-[9px] md:text-[11px] font-black tracking-[0.2em]">ROLL</span>
                 </>
               )}
             </button>
@@ -1710,63 +1664,65 @@ export default function Game() {
       </AnimatePresence>
 
       {/* Navigation HUD (Floating at bottom of screen) */}
-      <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black/90 backdrop-blur-2xl rounded-3xl p-3 border border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.5)] gap-6 pointer-events-auto scale-90 md:scale-100">
-          <div className="flex border-r border-white/10 pr-4 gap-2">
+      <div className="fixed bottom-6 md:bottom-10 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black/90 backdrop-blur-2xl rounded-3xl p-2 md:p-3 border border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.5)] gap-3 md:gap-6 pointer-events-auto max-md:w-[90%] max-md:justify-center">
+          <div className="flex border-r border-white/10 pr-2 md:pr-4 gap-1 md:gap-2 shrink-0">
             <button 
               onClick={() => setZoom(prev => Math.min(2, prev + 0.1))}
-              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              className="p-2 md:p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
               title="Zoom In"
             >
-              <Plus className="w-5 h-5 text-green-400" />
+              <Plus className="w-4 h-4 md:w-5 md:h-5 text-green-400" />
             </button>
             <button 
               onClick={() => setZoom(prev => Math.max(0.1, prev - 0.1))}
-              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              className="p-2 md:p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
               title="Zoom Out"
             >
-                <Minus className="w-5 h-5 text-red-400" />
+                <Minus className="w-4 h-4 md:w-5 md:h-5 text-red-400" />
             </button>
             <button 
               onClick={() => setIsFollowing(!isFollowing)}
               className={cn(
-                "p-3 rounded-2xl transition-all flex items-center gap-2",
+                "p-2 md:p-3 rounded-2xl transition-all flex items-center gap-1 md:gap-2",
                 isFollowing ? "bg-blue-600 text-white" : "text-white/40 hover:text-white"
               )}
               title="Toggle Follow Player"
             >
-              <MapPin className="w-5 h-5" />
-              <span className="text-[10px] uppercase tracking-widest font-black">{isFollowing ? 'ON' : 'OFF'}</span>
+              <MapPin className="w-4 h-4 md:w-5 md:h-5" />
+              <span className="text-[8px] md:text-[10px] uppercase tracking-widest font-black hidden sm:inline">{isFollowing ? 'ON' : 'OFF'}</span>
             </button>
             <button 
               onClick={centerOnMe}
-              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              className="p-2 md:p-3 text-white hover:bg-white/10 rounded-2xl transition-all flex items-center gap-1"
               title="Find My Player"
             >
-              <Target className="w-5 h-5 text-blue-400" />
+              <Target className="w-4 h-4 md:w-5 md:h-5 text-blue-400" />
+              <span className="text-[8px] md:text-[10px] uppercase font-black">ME</span>
             </button>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-1 md:gap-2 overflow-x-auto custom-scrollbar no-scrollbar scroll-smooth">
             {[
               { id: 'board', icon: Home, label: 'Map' },
-              { id: 'stocks', icon: TrendingUp, label: 'Market' },
+              { id: 'stocks', icon: TrendingUp, label: 'Stocks' },
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
-              { id: 'stats', icon: Users, label: 'Network' }
+              { id: 'stats', icon: Users, label: 'Players' }
             ].map(v => (
               <button 
                 key={v.id}
                 onClick={() => setView(v.id as any)}
                 className={cn(
-                  "px-6 py-4 rounded-2xl flex items-center gap-4 transition-all group",
+                  "px-3 md:px-6 py-3 md:py-4 rounded-2xl flex items-center gap-2 md:gap-4 transition-all group shrink-0",
                   view === v.id ? "bg-white text-black font-black" : "text-white/40 hover:text-white"
                 )}
               >
-                <v.icon className="w-5 h-5 transition-transform group-hover:scale-110" />
-                <span className="text-[11px] uppercase tracking-widest leading-none font-black">{v.label}</span>
+                <v.icon className={cn("w-4 h-4 md:w-5 md:h-5 transition-transform group-hover:scale-110", view === v.id ? "text-blue-600" : "")} />
+                <span className="text-[9px] md:text-[11px] uppercase tracking-widest leading-none font-black">{v.label}</span>
               </button>
             ))}
           </div>
       </div>
+
 
       {/* Marquee Footer */}
       <footer className="h-10 bg-white border-t border-black/5 flex items-center px-6 overflow-hidden shrink-0">
