@@ -6,18 +6,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabase';
 import { BOARD_SPACES } from './constants';
-import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { 
   Building2, 
   MapPin, 
   Wallet, 
-  Dices,
-  Dice1,
-  Dice2,
-  Dice3,
-  Dice4,
-  Dice5,
-  Dice6,
   History, 
   Users, 
   Send,
@@ -35,6 +28,7 @@ import {
   ArrowRightLeft,
   Skull,
   Bell,
+  Zap,
   Plus,
   Minus
 } from 'lucide-react';
@@ -151,6 +145,18 @@ export default function Game() {
   const [shareholders, setShareholders] = useState<Shareholder[]>([]);
   const [isCreatingCompany, setIsCreatingCompany] = useState(false);
   const [newCompanyName, setNewCompanyName] = useState('');
+  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
+  const [stocks, setStocks] = useState<Stock[]>([
+    { symbol: 'AMZN', name: 'Anazona', price: 150, history: [], change: 0 },
+    { symbol: 'WDWS', name: 'Windidows', price: 280, history: [], change: 0 },
+    { symbol: 'META', name: 'Metas', price: 310, history: [], change: 0 },
+    { symbol: 'EBAY', name: 'Ebais', price: 45, history: [], change: 0 },
+    { symbol: 'PEAR', name: 'Pear', price: 190, history: [], change: 0 },
+  ]);
+  const [playerStocks, setPlayerStocks] = useState<Record<string, number>>({}); // symbol -> amount
+  const [isBotThinking, setIsBotThinking] = useState(false);
+  const [missingTables, setMissingTables] = useState<string[]>([]);
+  const missingTablesRef = React.useRef<Set<string>>(new Set());
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   
@@ -207,17 +213,6 @@ export default function Game() {
     }
   };
 
-  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
-  const [stocks, setStocks] = useState<Stock[]>([
-    { symbol: 'AMZN', name: 'Anazona', price: 150, history: [], change: 0 },
-    { symbol: 'WDWS', name: 'Windidows', price: 280, history: [], change: 0 },
-    { symbol: 'META', name: 'Metas', price: 310, history: [], change: 0 },
-    { symbol: 'EBAY', name: 'Ebais', price: 45, history: [], change: 0 },
-    { symbol: 'PEAR', name: 'Pear', price: 190, history: [], change: 0 },
-  ]);
-  const [playerStocks, setPlayerStocks] = useState<Record<string, number>>({}); // symbol -> amount
-  const [isBotThinking, setIsBotThinking] = useState(false);
-
   const addToast = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev.filter(t => t.id !== id), { id, message, type }]);
@@ -226,53 +221,55 @@ export default function Game() {
 
   const fetchData = useCallback(async (gid: string) => {
     try {
-      const { data: pData, error: pError } = await supabase
-        .from('players')
-        .select('*')
-        .eq('game_id', gid);
-      
-      if (pError) throw pError;
+      const fetchSafely = async (tableName: string, query: any) => {
+        if (missingTablesRef.current.has(tableName)) return null;
+        
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === '42P01' || error.code === 'PGRST205') {
+            if (!missingTablesRef.current.has(tableName)) {
+              missingTablesRef.current.add(tableName);
+              setMissingTables(Array.from(missingTablesRef.current));
+              console.warn(`Supabase table '${tableName}' missing. Social/Chat features disabled until SQL is run.`);
+            }
+            return null;
+          }
+          throw error;
+        }
+        
+        // If it worked but was previously missing, remove it
+        if (missingTablesRef.current.has(tableName)) {
+          missingTablesRef.current.delete(tableName);
+          setMissingTables(Array.from(missingTablesRef.current));
+        }
+        
+        return data;
+      };
+
+      const pData = await fetchSafely('players', supabase.from('players').select('*').eq('game_id', gid));
       if (pData) setPlayers(pData);
 
-      const { data: propData, error: propError } = await supabase
-        .from('properties')
-        .select('*')
-        .eq('game_id', gid);
-      
-      if (propError) throw propError;
+      const propData = await fetchSafely('properties', supabase.from('properties').select('*').eq('game_id', gid));
       if (propData) setProperties(propData);
 
       // Fetch Chat
-    const { data: msgData, error: msgError } = await supabase
+      const msgData = await fetchSafely('messages', supabase
         .from('messages')
         .select('*')
         .eq('game_id', gid)
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(50));
       
-      if (msgError) {
-        console.error("Chat Fetch Error:", msgError);
-        const isTableMissing = msgError.code === '42P01' || msgError.code === 'PGRST205';
-        if (isTableMissing) {
-          // Silent local fallback - don't spam toasts but log it
-          console.warn("Supabase 'messages' table not found. Using local session memory.");
-        } else {
-          addToast("Chat communication error", "error");
-        }
-      }
-
       if (msgData) {
         setMessages(prev => {
           const fetched = [...msgData].reverse();
           const combined = [...prev, ...fetched];
-          // Filter duplicates using ID or composite key
           const unique = combined.filter((msg, index, self) => 
             index === self.findIndex((m) => (
               (m.id && msg.id && m.id === msg.id) || 
               (m.player_id === msg.player_id && m.text === msg.text && Math.abs(new Date(m.created_at || 0).getTime() - new Date(msg.created_at || 0).getTime()) < 1000)
             ))
           );
-          // Keep only last 200 in memory (history persistence)
           return unique.sort((a, b) => {
             const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
             const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -283,44 +280,39 @@ export default function Game() {
 
       // Fetch Social
       if (currentPlayer) {
-        const { data: socialData, error: socialError } = await supabase
+        const socialData = await fetchSafely('social_connections', supabase
           .from('social_connections')
           .select('*')
-          .or(`sender_id.eq.${currentPlayer.id},receiver_id.eq.${currentPlayer.id}`);
+          .or(`sender_id.eq.${currentPlayer.id},receiver_id.eq.${currentPlayer.id}`));
         
-        if (socialError) {
-          console.error("Social Fetch Error:", socialError);
-          if (socialError.code === '42P01') {
-            // Only toast once to avoid spam
-            console.warn("Table 'social_connections' missing in Supabase");
-          }
-        }
         if (socialData) setFriends(socialData);
       }
 
       // Fetch Companies
-      const { data: compData } = await supabase
+      const compData = await fetchSafely('companies', supabase
         .from('companies')
         .select('*')
-        .eq('game_id', gid);
+        .eq('game_id', gid));
       if (compData) setCompanies(compData);
 
-      const { data: shareData } = await supabase
+      const shareData = await fetchSafely('shareholders', supabase
         .from('shareholders')
-        .select('*');
+        .select('*'));
       if (shareData) setShareholders(shareData);
 
       // 24 Hour Message Cleanup Logic (Silent Fail)
-      try {
-        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        await supabase.from('messages').delete().lt('created_at', oneDayAgo);
-      } catch (cleanErr) {
-        console.warn("Auto-cleanup failed:", cleanErr);
+      if (!missingTablesRef.current.has('messages')) {
+        try {
+          const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          await supabase.from('messages').delete().lt('created_at', oneDayAgo);
+        } catch (cleanErr) {
+          // ignore
+        }
       }
 
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
-      setErrorMsg(`Data Synchronization Error: ${e.message}`);
+      setErrorMsg(`Synchronization Lag: Reconnecting...`); // Softer error message
     }
   }, [currentPlayer?.id]);
 
@@ -362,23 +354,7 @@ export default function Game() {
     return () => window.removeEventListener('resize', handleResize);
   }, [isFollowing]);
 
-  // One-time reset script
-  useEffect(() => {
-    const resetPlayers = async () => {
-      const hasReset = localStorage.getItem('tycoon_v17_reset');
-      if (!hasReset) {
-        // Delete everything to enforce password accounts
-        const { error: pErr } = await supabase.from('properties').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-        const { error: uErr } = await supabase.from('players').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-        
-        if (!pErr && !uErr) {
-          localStorage.setItem('tycoon_v17_reset', 'true');
-          window.location.reload();
-        }
-      }
-    };
-    resetPlayers(); 
-  }, []);
+
 
   // Stock Market Fluctuation
   useEffect(() => {
@@ -1041,7 +1017,7 @@ export default function Game() {
           <div className="absolute top-0 left-0 w-full h-1 bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.2)]" />
           <div className="flex flex-col items-center mb-10">
             <div className="w-24 h-24 bg-gray-50 border border-black/[0.03] rounded-full flex items-center justify-center mb-8 shadow-inner">
-              <Dice5 className="text-blue-600 w-12 h-12" />
+              <Landmark className="text-blue-600 w-12 h-12" />
             </div>
             <h1 className="text-5xl font-serif italic text-black tracking-widest text-center">TYCOON</h1>
             <p className="text-[11px] uppercase tracking-[0.4em] opacity-40 text-center mt-4 font-black">Classic Board Game</p>
@@ -1802,58 +1778,49 @@ export default function Game() {
                <div className="flex-1 flex flex-col gap-6">
                  <div className="flex justify-between items-center px-1">
                    <div>
-                     <h2 className="text-xl font-serif italic text-gray-900">Comm-Link</h2>
-                     <p className="text-[8px] font-black uppercase tracking-[0.2em] opacity-30 italic">Frequency Alpha-1</p>
+                     <h2 className="text-xl font-serif italic text-gray-900">System Logs</h2>
+                     <p className="text-[8px] font-black uppercase tracking-[0.2em] opacity-30 italic">Registry & Management</p>
                    </div>
                    <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
-                     <Send className="text-blue-600 w-4 h-4" />
+                     <History className="text-blue-600 w-4 h-4" />
                    </div>
                  </div>
 
-                 <div className="bg-white border border-black/5 rounded-3xl overflow-hidden shadow-sm flex-1 flex flex-col min-h-[300px]">
-                   <div className="overflow-y-auto custom-scrollbar flex-1">
-                     <table className="w-full text-left border-collapse table-fixed">
-                       <thead>
-                         <tr className="bg-gray-50 border-b border-black/5 sticky top-0 z-10">
-                           <th className="w-24 px-4 py-3 text-[8px] font-black uppercase tracking-widest opacity-40">Identity</th>
-                           <th className="px-4 py-3 text-[8px] font-black uppercase tracking-widest opacity-40">Message Signal</th>
-                         </tr>
-                       </thead>
-                       <tbody className="divide-y divide-black/[0.02]">
-                         {[...messages].reverse().map((m, i) => (
-                           <tr key={m.id || i} className="hover:bg-gray-50/50 transition-colors">
-                             <td className="px-4 py-3 align-top">
-                               <span className="text-[8px] font-mono opacity-30 block mb-1">
-                                 {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '---'}
-                               </span>
-                               <span className={cn(
-                                 "text-[9px] font-black uppercase break-all leading-tight text-gray-900"
-                               )}>
-                                 {m.player_name || 'System'}
-                               </span>
-                             </td>
-                             <td className="px-4 py-3 text-[11px] text-gray-700 font-medium leading-relaxed align-top">
-                               {m.text}
-                             </td>
-                           </tr>
-                         ))}
-                       </tbody>
-                     </table>
-                     {messages.length === 0 && (
-                       <div className="py-24 text-center opacity-20 font-black uppercase text-[10px] tracking-widest italic flex flex-col items-center gap-4">
-                         <div className="animate-pulse w-2 h-2 bg-black rounded-full" />
-                         No signals detected
+                 {missingTables.length > 0 && (
+                   <div className="bg-red-50 border border-red-100 p-5 rounded-[2rem] space-y-3">
+                     <div className="flex items-center gap-3">
+                       <div className="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg animate-pulse">
+                         <Skull className="w-4 h-4" />
                        </div>
-                     )}
+                       <div>
+                         <div className="text-[10px] font-black uppercase text-red-900">Database Offline</div>
+                         <div className="text-[8px] font-mono text-red-500 uppercase">{missingTables.length} Tables Missing</div>
+                       </div>
+                     </div>
+                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">To enable Chat, Friends, and Companies, you must run the SQL script below in your Supabase SQL Editor.</p>
                    </div>
-                   
-                   {/* SQL FIX INSTRUCTIONS */}
-                   <div className="p-4 bg-yellow-50 border-t border-yellow-100">
-                     <p className="text-[9px] font-black uppercase text-yellow-800 mb-2 flex items-center gap-2">
-                       <Bell className="w-3 h-3" /> Database Sync Required
-                     </p>
-                     <div className="bg-black/90 p-3 rounded-xl font-mono text-[8px] text-green-400 overflow-x-auto whitespace-pre">
-{`CREATE TABLE messages (
+                 )}
+
+                 <div className="bg-white border border-black/5 rounded-[2rem] overflow-hidden shadow-sm flex-1 flex flex-col min-h-[300px]">
+                   <div className="bg-black text-white p-6 font-mono text-[9px] relative group">
+                     <div className="flex items-center justify-between mb-4">
+                       <span className="text-blue-400 font-black tracking-widest text-[8px] uppercase">Supabase Setup Script</span>
+                       <button 
+                         onClick={() => {
+                           const sql = document.getElementById('setup-sql')?.innerText;
+                           if (sql) {
+                             navigator.clipboard.writeText(sql);
+                             addToast("SQL Copied to Clipboard", "success");
+                           }
+                         }}
+                         className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded-lg text-[7px] uppercase font-black transition-all"
+                       >
+                         Copy Logic
+                       </button>
+                     </div>
+                     <div id="setup-sql" className="max-h-[300px] overflow-y-auto whitespace-pre custom-scrollbar text-green-400 opacity-90 leading-relaxed font-mono">
+{`/* 1. CORE MESSAGES TABLE */
+CREATE TABLE IF NOT EXISTS messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
   player_id TEXT NOT NULL,
@@ -1862,7 +1829,8 @@ export default function Game() {
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE companies (
+/* 2. CORPORATE ENTITY TABLES */
+CREATE TABLE IF NOT EXISTS companies (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
   owner_id TEXT NOT NULL,
@@ -1872,7 +1840,7 @@ CREATE TABLE companies (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE shareholders (
+CREATE TABLE IF NOT EXISTS shareholders (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
   player_id TEXT NOT NULL,
@@ -1880,9 +1848,45 @@ CREATE TABLE shareholders (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders;`}
+/* 3. SOCIAL CONNECTION TABLE */
+CREATE TABLE IF NOT EXISTS social_connections (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  sender_id TEXT NOT NULL,
+  receiver_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+/* 4. ENABLE REALTIME UPDATES */
+ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders, social_connections;`}
                      </div>
-                     <p className="text-[7px] text-yellow-600 mt-2 italic">Copy and run this in your Supabase SQL Editor to enable persistent chat.</p>
+                     <div className="mt-4 pt-4 border-t border-white/10">
+                        <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
+                     </div>
+                   </div>
+
+                   <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4">
+                     <div className="text-[10px] uppercase font-black tracking-widest opacity-20">Live Sync Log</div>
+                     {messages.length > 0 ? (
+                       <div className="space-y-4">
+                         {[...messages].reverse().map((m, i) => (
+                           <div key={m.id || i} className="flex flex-col gap-1">
+                             <div className="flex items-center justify-between">
+                               <span className="text-[10px] font-black uppercase text-blue-600">{m.player_name}</span>
+                               <span className="text-[8px] font-mono opacity-20">{m.created_at ? new Date(m.created_at).toLocaleTimeString() : 'NOW'}</span>
+                             </div>
+                             <p className="text-[11px] text-gray-700 leading-relaxed bg-gray-50 p-3 rounded-2xl border border-black/[0.02]">
+                               {m.text}
+                             </p>
+                           </div>
+                         ))}
+                       </div>
+                     ) : (
+                       <div className="flex flex-col items-center justify-center py-20 opacity-20 gap-4">
+                         <History className="w-8 h-8" />
+                         <span className="text-[10px] font-black uppercase tracking-widest italic">No events recorded</span>
+                       </div>
+                     )}
                    </div>
                  </div>
                </div>
@@ -2089,7 +2093,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders;
 
       {/* Fixed Dice Roll Area (Always Visible) */}
       <AnimatePresence>
-        {isJoined && currentPlayer && !showSidebar && (
+        {isJoined && currentPlayer && !showSidebar && !showChat && (
           <motion.div 
             initial={{ x: 300, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
@@ -2135,7 +2139,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders;
                       whileTap={{ scale: 0.95 }}
                       onClick={() => buyProperty(currentPlayer.position)}
                       disabled={currentPlayer.balance < (space.price || 0)}
-                      className="w-full py-4 bg-green-600 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-2xl shadow-2xl flex items-center justify-center gap-3 border-4 border-white/20 hover:bg-black transition-all disabled:opacity-50"
+                      className="w-full py-4 bg-green-600 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-2xl shadow-2xl flex items-center justify-center gap-3 border-4 border-white/20 hover:bg-black transition-all disabled:opacity-50 px-6"
                     >
                       <Building2 className="w-4 h-4" /> BUY PROPERTY · ${space.price}
                     </motion.button>
@@ -2152,15 +2156,11 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders;
             >
               <div className="absolute inset-0 bg-gradient-to-tr from-white/10 to-transparent pointer-events-none" />
               {rolling ? (
-                 <div className="flex gap-1.5">
-                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce" />
-                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce [animation-delay:0.1s]" />
-                    <div className="w-1.5 h-1.5 md:w-2 md:h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
-                 </div>
+                 <span className="text-[10px] font-black uppercase tracking-widest animate-pulse">Rolling...</span>
               ) : (
                 <>
-                  <Dices className="w-8 h-8 md:w-10 md:h-10 mb-1 group-hover:rotate-12 transition-transform drop-shadow-lg" />
-                  <span className="text-[9px] md:text-[11px] font-black tracking-[0.2em]">ROLL</span>
+                  <Zap className="w-8 h-8 md:w-10 md:h-10 mb-1 group-hover:rotate-12 transition-transform drop-shadow-lg" />
+                  <span className="text-[9px] md:text-[11px] font-black tracking-widest leading-tight">MOVE</span>
                 </>
               )}
             </button>
