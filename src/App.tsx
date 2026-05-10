@@ -65,6 +65,23 @@ interface Stock {
   change: number;
 }
 
+interface Company {
+  id: string;
+  game_id: string;
+  owner_id: string;
+  owner_name: string;
+  name: string;
+  base_price: number;
+  created_at: string;
+}
+
+interface Shareholder {
+  id: string;
+  company_id: string;
+  player_id: string;
+  shares: number;
+}
+
 interface Message {
   id: string;
   game_id: string;
@@ -121,7 +138,7 @@ export default function Game() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1, 1]);
   const [showSidebar, setShowSidebar] = useState(false);
-  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats'>('board');
+  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history'>('board');
   const [zoom, setZoom] = useState(0.4);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -130,6 +147,10 @@ export default function Game() {
   const [showChat, setShowChat] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState<Player | null>(null);
   const [friends, setFriends] = useState<SocialConnection[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [shareholders, setShareholders] = useState<Shareholder[]>([]);
+  const [isCreatingCompany, setIsCreatingCompany] = useState(false);
+  const [newCompanyName, setNewCompanyName] = useState('');
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   
@@ -222,13 +243,24 @@ export default function Game() {
       if (propData) setProperties(propData);
 
       // Fetch Chat
-      const { data: msgData } = await supabase
+    const { data: msgData, error: msgError } = await supabase
         .from('messages')
         .select('*')
         .eq('game_id', gid)
         .order('created_at', { ascending: false })
         .limit(50);
       
+      if (msgError) {
+        console.error("Chat Fetch Error:", msgError);
+        const isTableMissing = msgError.code === '42P01' || msgError.code === 'PGRST205';
+        if (isTableMissing) {
+          // Silent local fallback - don't spam toasts but log it
+          console.warn("Supabase 'messages' table not found. Using local session memory.");
+        } else {
+          addToast("Chat communication error", "error");
+        }
+      }
+
       if (msgData) {
         setMessages(prev => {
           const fetched = [...msgData].reverse();
@@ -236,26 +268,47 @@ export default function Game() {
           // Filter duplicates using ID or composite key
           const unique = combined.filter((msg, index, self) => 
             index === self.findIndex((m) => (
-              m.id === msg.id || (m.player_id === msg.player_id && m.text === msg.text && m.created_at === msg.created_at)
+              (m.id && msg.id && m.id === msg.id) || 
+              (m.player_id === msg.player_id && m.text === msg.text && Math.abs(new Date(m.created_at || 0).getTime() - new Date(msg.created_at || 0).getTime()) < 1000)
             ))
           );
-          // Keep only last 100 in memory
+          // Keep only last 200 in memory (history persistence)
           return unique.sort((a, b) => {
             const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
             const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
             return timeA - timeB;
-          }).slice(-100);
+          }).slice(-200);
         });
       }
 
       // Fetch Social
       if (currentPlayer) {
-        const { data: socialData } = await supabase
+        const { data: socialData, error: socialError } = await supabase
           .from('social_connections')
           .select('*')
           .or(`sender_id.eq.${currentPlayer.id},receiver_id.eq.${currentPlayer.id}`);
+        
+        if (socialError) {
+          console.error("Social Fetch Error:", socialError);
+          if (socialError.code === '42P01') {
+            // Only toast once to avoid spam
+            console.warn("Table 'social_connections' missing in Supabase");
+          }
+        }
         if (socialData) setFriends(socialData);
       }
+
+      // Fetch Companies
+      const { data: compData } = await supabase
+        .from('companies')
+        .select('*')
+        .eq('game_id', gid);
+      if (compData) setCompanies(compData);
+
+      const { data: shareData } = await supabase
+        .from('shareholders')
+        .select('*');
+      if (shareData) setShareholders(shareData);
 
       // 24 Hour Message Cleanup Logic (Silent Fail)
       try {
@@ -271,15 +324,19 @@ export default function Game() {
     }
   }, [currentPlayer?.id]);
 
-  // Auto-scroll chat
+  // Auto-scroll chat and initial fetch
   useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-    if (showChat) {
-      fetchData(gameId);
-    }
-  }, [messages, showChat, fetchData, gameId]);
+  }, [messages]);
+
+  // Periodic fetch (less aggressive)
+  useEffect(() => {
+    fetchData(gameId);
+    const interval = setInterval(() => fetchData(gameId), 10000);
+    return () => clearInterval(interval);
+  }, [fetchData, gameId]);
 
   useEffect(() => {
     // Analytics Sync and Health check
@@ -416,6 +473,95 @@ export default function Game() {
     addToast(`Sold ${amount} shares of ${stock.name} for $${profit.toFixed(2)}`, "success");
   };
 
+  const createCompany = async () => {
+    if (!currentPlayer || !newCompanyName) return;
+    if (currentPlayer.balance < 10000) {
+      addToast("Insufficient funds. Enterprise requires $10,000", "error");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('companies')
+      .insert({
+        game_id: gameId,
+        owner_id: currentPlayer.id,
+        owner_name: currentPlayer.name,
+        name: newCompanyName,
+        base_price: 1000,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Create Company Error:", error);
+      if (error.code === '42P01' || error.code === 'PGRST205') {
+        const localId = Math.random().toString();
+        const localComp = {
+          id: localId,
+          game_id: gameId,
+          owner_id: currentPlayer.id,
+          owner_name: currentPlayer.name,
+          name: newCompanyName,
+          base_price: 1000,
+          created_at: new Date().toISOString()
+        };
+        setCompanies(prev => [...prev, localComp]);
+        addToast("Enterprise started in local memory (Table missing)", "info");
+      } else {
+        addToast(`Enterprise error: ${error.message}`, "error");
+        return;
+      }
+    }
+
+    await handleBalanceUpdate(currentPlayer.id, -10000);
+    setIsCreatingCompany(false);
+    setNewCompanyName('');
+    addToast(`${newCompanyName} has been founded!`, "success");
+  };
+
+  const investInCompany = async (companyId: string, shares: number) => {
+    if (!currentPlayer) return;
+    const company = companies.find(c => c.id === companyId);
+    if (!company) return;
+
+    const owner = players.find(p => p.id === company.owner_id);
+    const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
+    const pricePerShare = company.base_price * multiplier;
+    const totalCost = pricePerShare * shares;
+
+    if (currentPlayer.balance < totalCost) {
+      addToast("Insufficient funds for investment", "error");
+      return;
+    }
+
+    const { error } = await supabase
+      .from('shareholders')
+      .insert({
+        company_id: companyId,
+        player_id: currentPlayer.id,
+        shares: shares
+      });
+
+    if (error) {
+      console.error("Investment Error:", error);
+      if (error.code === '42P01' || error.code === 'PGRST205') {
+        setShareholders(prev => [...prev, {
+          id: Math.random().toString(),
+          company_id: companyId,
+          player_id: currentPlayer.id,
+          shares: shares
+        }]);
+        addToast("Investment recorded in local memory", "info");
+      } else {
+        addToast("Investment failed", "error");
+        return;
+      }
+    }
+
+    await handleBalanceUpdate(currentPlayer.id, -totalCost);
+    addToast(`Invested in ${company.name}!`, "success");
+  };
+
   const handleBalanceUpdate = async (playerId: string, delta: number) => {
     const player = players.find(p => p.id === playerId);
     if (!player) return;
@@ -533,6 +679,20 @@ export default function Game() {
         event: '*', 
         schema: 'public', 
         table: 'social_connections'
+      }, () => {
+        fetchData(gameId);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'companies'
+      }, () => {
+        fetchData(gameId);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'shareholders'
       }, () => {
         fetchData(gameId);
       })
@@ -720,9 +880,25 @@ export default function Game() {
 
     if (!propError) {
       setLogs(prev => [`Bought ${space.name} for $${space.price}`, ...prev]);
+      
+      const newBalance = currentPlayer.balance - space.price;
+      
+      // Update local state for immediate feedback
+      setProperties(prev => [...prev, {
+        id: Math.random().toString(), // Temporary ID until next fetch
+        space_id: spaceId,
+        game_id: gameId,
+        owner_id: currentPlayer.id,
+        buildings: 0,
+        mortgaged: false
+      } as any]);
+      
+      setCurrentPlayer({ ...currentPlayer, balance: newBalance });
+      setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? { ...p, balance: newBalance } : p));
+
       await supabase
         .from('players')
-        .update({ balance: currentPlayer.balance - space.price })
+        .update({ balance: newBalance })
         .eq('id', currentPlayer.id);
     }
   };
@@ -796,19 +972,36 @@ export default function Game() {
     e.preventDefault();
     if (!newMessage.trim() || !currentPlayer) return;
 
-    const msg = {
+    const messageText = newMessage.trim();
+    setNewMessage('');
+
+    const { error } = await supabase.from('messages').insert({
       game_id: gameId,
       player_id: currentPlayer.id,
       player_name: currentPlayer.name,
-      text: newMessage.trim(),
-      created_at: new Date().toISOString()
-    };
+      text: messageText,
+    });
 
-    setNewMessage('');
-    const { error } = await supabase.from('messages').insert(msg);
     if (error) {
       console.error("Chat send error:", error);
-      addToast("Chat failed to send", "error");
+      const isTableMissing = error.code === '42P01' || error.code === 'PGRST205';
+      
+      if (isTableMissing) {
+        // Optimistic local add since table doesn't exist
+        const localMsg: Message = {
+          id: Math.random().toString(),
+          game_id: gameId,
+          player_id: currentPlayer.id,
+          player_name: currentPlayer.name,
+          text: messageText,
+          created_at: new Date().toISOString()
+        };
+        setMessages(prev => [...prev.slice(-199), localMsg]);
+        addToast("Message sent to local memory (Database table missing)", "info");
+      } else {
+        addToast(`Chat error: ${error.message}`, "error");
+        setNewMessage(messageText); // Restore text on failure
+      }
     }
   };
 
@@ -820,8 +1013,10 @@ export default function Game() {
       status: 'pending'
     });
     if (error) {
+      console.error("Social error:", error);
       if (error.code === '23505') addToast("Request already sent", "info");
-      else addToast("Social error", "error");
+      else if (error.code === '42P01') addToast("Social table missing. Please check schema.", "error");
+      else addToast(`Social error: ${error.message}`, "error");
     } else {
       addToast("Friend request sent!", "success");
     }
@@ -1367,10 +1562,111 @@ export default function Game() {
 
             {view === 'stocks' && (
               <div className="flex-1 flex flex-col gap-6">
-                <div className="flex justify-between items-center">
-                   <h2 className="text-xl font-serif italic">Global Markets</h2>
-                   <TrendingUp className="text-green-500 w-5 h-5" />
+                <div className="flex justify-between items-center bg-black text-white p-6 rounded-3xl -mx-2 shadow-2xl">
+                   <div>
+                     <h2 className="text-2xl font-serif italic">Global Markets</h2>
+                     <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-40">Financial District</p>
+                   </div>
+                   <motion.div
+                     animate={{ rotate: 360 }}
+                     transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                   >
+                     <TrendingUp className="text-green-400 w-8 h-8" />
+                   </motion.div>
                 </div>
+
+                {/* START ENTERPRISE BUTTON */}
+                {isJoined && currentPlayer && (
+                  <div className="bg-blue-600 p-6 rounded-3xl text-white shadow-xl">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest opacity-60">Corporate Registry</div>
+                        <div className="text-lg font-black uppercase">Found Your Empire</div>
+                      </div>
+                      <Briefcase className="w-8 h-8 opacity-20" />
+                    </div>
+                    {isCreatingCompany ? (
+                      <div className="space-y-4">
+                        <input 
+                          type="text" 
+                          placeholder="COMPANY NAME (E.G. STARK IND)" 
+                          value={newCompanyName}
+                          onChange={(e) => setNewCompanyName(e.target.value.toUpperCase())}
+                          className="w-full bg-white/20 border border-white/30 rounded-xl px-4 py-3 text-sm font-black uppercase placeholder:text-white/40 focus:outline-none focus:bg-white/30"
+                        />
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={createCompany}
+                            className="flex-1 py-3 bg-white text-blue-600 text-[10px] font-black uppercase rounded-xl"
+                          >
+                            FOUND COMPANY ($10,000)
+                          </button>
+                          <button 
+                            onClick={() => setIsCreatingCompany(false)}
+                            className="px-4 py-3 bg-black/20 text-white text-[10px] font-black uppercase rounded-xl"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button 
+                        onClick={() => setIsCreatingCompany(true)}
+                        className="w-full py-4 bg-white text-blue-600 font-black uppercase text-[11px] tracking-widest rounded-2xl shadow-lg flex items-center justify-center gap-3 hover:scale-105 transition-transform"
+                      >
+                        <Plus className="w-4 h-4" /> Start Enterprise ($10,000)
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* PLAYER COMPANIES */}
+                {companies.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Corporate Index</div>
+                    {companies.map(c => {
+                      const owner = players.find(p => p.id === c.owner_id);
+                      const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
+                      const price = c.base_price * multiplier;
+                      const myShares = shareholders.filter(s => s.company_id === c.id && s.player_id === currentPlayer?.id).reduce((acc, s) => acc + s.shares, 0);
+
+                      return (
+                        <div key={c.id} className="bg-white border border-black/5 p-4 rounded-3xl shadow-sm space-y-4">
+                          <div className="flex justify-between items-start">
+                            <div>
+                               <div className="text-[8px] font-black uppercase text-blue-600 leading-none mb-1">Founder: {c.owner_name}</div>
+                               <div className="text-sm font-black uppercase">{c.name}</div>
+                            </div>
+                            <div className="text-right">
+                               <div className="text-lg font-mono font-black">${price.toFixed(0)}</div>
+                               <div className={cn("text-[8px] font-black uppercase", multiplier >= 1 ? "text-green-600" : "text-red-600")}>
+                                  Valuation: {multiplier >= 1 ? 'GROWING' : 'RECESSION'}
+                               </div>
+                            </div>
+                          </div>
+                          
+                          <div className="flex gap-2">
+                             <button 
+                               onClick={() => investInCompany(c.id, 1)}
+                               disabled={!currentPlayer || currentPlayer.balance < price}
+                               className="flex-1 py-3 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl disabled:opacity-30"
+                             >
+                               Invest 1 Share
+                             </button>
+                          </div>
+                          {myShares > 0 && (
+                            <div className="bg-gray-50 border border-black/[0.03] p-2 rounded-xl flex items-center justify-between">
+                               <span className="text-[8px] font-black uppercase opacity-40">Your Equity</span>
+                               <span className="text-[8px] font-mono font-black">{myShares} SHARES</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Global Commodities</div>
                 {stocks.map(s => (
                   <div key={s.symbol} className="bg-gray-50 border border-black/[0.03] p-4 rounded-2xl flex flex-col gap-4">
                     <div className="flex justify-between items-start">
@@ -1440,7 +1736,50 @@ export default function Game() {
                     <h2 className="text-xl font-serif italic">Network Contacts</h2>
                     <Users className="text-blue-600 w-5 h-5" />
                   </div>
-                  {/* Reuse the social list but bigger */}
+                  {/* Pending Requests Section */}
+                  {friends.some(f => f.receiver_id === currentPlayer?.id && f.status === 'pending') && (
+                    <div className="space-y-4 mb-6">
+                      <div className="flex items-center justify-between px-1">
+                        <div className="text-[10px] uppercase tracking-widest font-black text-blue-600">Pending Signals</div>
+                        <span className="w-5 h-5 bg-blue-600 text-white rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">
+                          {friends.filter(f => f.receiver_id === currentPlayer?.id && f.status === 'pending').length}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {friends.filter(f => f.receiver_id === currentPlayer?.id && f.status === 'pending').map(req => {
+                          const sender = players.find(p => p.id === req.sender_id);
+                          return (
+                            <div key={req.id} className="bg-blue-50 border border-blue-100/50 p-4 rounded-3xl flex items-center justify-between group">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-sm shadow-md">
+                                  {sender?.name.charAt(0) || '?'}
+                                </div>
+                                <div>
+                                  <div className="text-[11px] font-black uppercase text-blue-900 leading-none mb-1">{sender?.name || 'Unknown'}</div>
+                                  <div className="text-[8px] font-mono text-blue-400 uppercase tracking-tighter">Connection Requested</div>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  acceptFriendRequest(req.id);
+                                }}
+                                className="px-5 py-2.5 bg-black text-white text-[9px] font-black uppercase tracking-widest rounded-xl hover:bg-blue-600 transition-all shadow-sm"
+                              >
+                                Accept
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20 px-1 mb-4 flex items-center gap-2">
+                    <span className="w-8 h-px bg-black opacity-10" />
+                    Directory
+                    <span className="flex-1 h-px bg-black opacity-10" />
+                  </div>
                   <div className="space-y-4">
                     {players.map(p => (
                       <div key={p.id} onClick={() => setSelectedProfile(p)} className="bg-white border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between cursor-pointer hover:border-blue-200 transition-all">
@@ -1456,6 +1795,96 @@ export default function Game() {
                       </div>
                     ))}
                   </div>
+               </div>
+            )}
+
+            {view === 'chat_history' && (
+               <div className="flex-1 flex flex-col gap-6">
+                 <div className="flex justify-between items-center px-1">
+                   <div>
+                     <h2 className="text-xl font-serif italic text-gray-900">Comm-Link</h2>
+                     <p className="text-[8px] font-black uppercase tracking-[0.2em] opacity-30 italic">Frequency Alpha-1</p>
+                   </div>
+                   <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+                     <Send className="text-blue-600 w-4 h-4" />
+                   </div>
+                 </div>
+
+                 <div className="bg-white border border-black/5 rounded-3xl overflow-hidden shadow-sm flex-1 flex flex-col min-h-[300px]">
+                   <div className="overflow-y-auto custom-scrollbar flex-1">
+                     <table className="w-full text-left border-collapse table-fixed">
+                       <thead>
+                         <tr className="bg-gray-50 border-b border-black/5 sticky top-0 z-10">
+                           <th className="w-24 px-4 py-3 text-[8px] font-black uppercase tracking-widest opacity-40">Identity</th>
+                           <th className="px-4 py-3 text-[8px] font-black uppercase tracking-widest opacity-40">Message Signal</th>
+                         </tr>
+                       </thead>
+                       <tbody className="divide-y divide-black/[0.02]">
+                         {[...messages].reverse().map((m, i) => (
+                           <tr key={m.id || i} className="hover:bg-gray-50/50 transition-colors">
+                             <td className="px-4 py-3 align-top">
+                               <span className="text-[8px] font-mono opacity-30 block mb-1">
+                                 {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '---'}
+                               </span>
+                               <span className={cn(
+                                 "text-[9px] font-black uppercase break-all leading-tight text-gray-900"
+                               )}>
+                                 {m.player_name || 'System'}
+                               </span>
+                             </td>
+                             <td className="px-4 py-3 text-[11px] text-gray-700 font-medium leading-relaxed align-top">
+                               {m.text}
+                             </td>
+                           </tr>
+                         ))}
+                       </tbody>
+                     </table>
+                     {messages.length === 0 && (
+                       <div className="py-24 text-center opacity-20 font-black uppercase text-[10px] tracking-widest italic flex flex-col items-center gap-4">
+                         <div className="animate-pulse w-2 h-2 bg-black rounded-full" />
+                         No signals detected
+                       </div>
+                     )}
+                   </div>
+                   
+                   {/* SQL FIX INSTRUCTIONS */}
+                   <div className="p-4 bg-yellow-50 border-t border-yellow-100">
+                     <p className="text-[9px] font-black uppercase text-yellow-800 mb-2 flex items-center gap-2">
+                       <Bell className="w-3 h-3" /> Database Sync Required
+                     </p>
+                     <div className="bg-black/90 p-3 rounded-xl font-mono text-[8px] text-green-400 overflow-x-auto whitespace-pre">
+{`CREATE TABLE messages (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  player_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE companies (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  owner_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  base_price NUMERIC DEFAULT 1000,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE shareholders (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL,
+  shares INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders;`}
+                     </div>
+                     <p className="text-[7px] text-yellow-600 mt-2 italic">Copy and run this in your Supabase SQL Editor to enable persistent chat.</p>
+                   </div>
+                 </div>
                </div>
             )}
           </div>
@@ -1660,40 +2089,61 @@ export default function Game() {
 
       {/* Fixed Dice Roll Area (Always Visible) */}
       <AnimatePresence>
-        {isJoined && currentPlayer && (
+        {isJoined && currentPlayer && !showSidebar && (
           <motion.div 
-            initial={{ x: 300 }}
-            animate={{ x: 0 }}
+            initial={{ x: 300, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 300, opacity: 0 }}
             className="fixed bottom-28 right-4 md:bottom-32 md:right-8 z-[90] flex flex-col items-center gap-4 pointer-events-auto"
           >
             <motion.div 
               animate={rolling ? { 
-                rotate: [0, 360],
-                rotateX: [0, 360],
-                scale: [1, 1.1, 1],
+                scale: [1, 1.2, 1],
+                y: [0, -10, 0]
               } : {}}
-              transition={{ duration: 0.3, repeat: rolling ? Infinity : 0 }}
-              className="w-32 h-20 md:w-40 md:h-24 bg-white border border-black/10 rounded-3xl shadow-2xl flex flex-col items-center justify-center relative overflow-hidden"
+              transition={{ duration: 0.15, repeat: rolling ? Infinity : 0 }}
+              className="w-32 h-20 md:w-40 md:h-24 bg-white border-2 border-black/10 rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.2)] flex flex-col items-center justify-center relative overflow-hidden"
             >
-              <div className="absolute inset-0 bg-gradient-to-br from-white to-gray-50 opacity-50" />
-              <div className="flex gap-3 md:gap-4 items-center">
+              <div className="absolute inset-0 bg-gradient-to-br from-white to-blue-50/30 opacity-50" />
+              <div className="flex gap-4 md:gap-6 items-center">
                 {diceVisual.map((v, i) => (
-                  <div key={i} className="relative z-10 text-blue-600">
-                    {v === 1 && <Dice1 className="w-8 h-8 md:w-10 md:h-10" />}
-                    {v === 2 && <Dice2 className="w-8 h-8 md:w-10 md:h-10" />}
-                    {v === 3 && <Dice3 className="w-8 h-8 md:w-10 md:h-10" />}
-                    {v === 4 && <Dice4 className="w-8 h-8 md:w-10 md:h-10" />}
-                    {v === 5 && <Dice5 className="w-8 h-8 md:w-10 md:h-10" />}
-                    {v === 6 && <Dice6 className="w-8 h-8 md:w-10 md:h-10" />}
+                  <div key={i} className="relative z-10 flex items-center justify-center w-10 h-10 md:w-12 md:h-12 bg-blue-600 text-white rounded-xl shadow-lg">
+                    <span className="text-xl md:text-2xl font-black font-mono">{v}</span>
                   </div>
                 ))}
               </div>
               {!rolling && (
-                <div className="mt-1 text-[10px] font-black text-blue-600 opacity-50 font-mono">
-                  SUM: {diceVisual[0] + diceVisual[1]}
+                <div className="mt-2 text-[8px] font-black tracking-widest text-blue-600 opacity-40 uppercase">
+                  Current Roll: {diceVisual[0] + diceVisual[1]}
                 </div>
               )}
             </motion.div>
+
+            {/* QUICK BUY BUTTON */}
+            {isJoined && currentPlayer && !rolling && (
+              (() => {
+                const space = BOARD_SPACES[currentPlayer.position];
+                const isOwned = properties.some(p => p.space_id === currentPlayer.position);
+                const canBuy = (space.type === 'property' || space.type === 'railroad' || space.type === 'utility') && !isOwned;
+                
+                if (canBuy) {
+                  return (
+                    <motion.button
+                      initial={{ scale: 0.8, opacity: 0, y: 20 }}
+                      animate={{ scale: 1, opacity: 1, y: 0 }}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => buyProperty(currentPlayer.position)}
+                      disabled={currentPlayer.balance < (space.price || 0)}
+                      className="w-full py-4 bg-green-600 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-2xl shadow-2xl flex items-center justify-center gap-3 border-4 border-white/20 hover:bg-black transition-all disabled:opacity-50"
+                    >
+                      <Building2 className="w-4 h-4" /> BUY PROPERTY · ${space.price}
+                    </motion.button>
+                  );
+                }
+                return null;
+              })()
+            )}
 
             <button 
               onClick={rollDice}
@@ -1761,7 +2211,8 @@ export default function Game() {
               { id: 'board', icon: Home, label: 'Map' },
               { id: 'stocks', icon: TrendingUp, label: 'Stocks' },
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
-              { id: 'stats', icon: Users, label: 'Players' }
+              { id: 'stats', icon: Users, label: 'Players' },
+              { id: 'chat_history', icon: Send, label: 'Chat Log' }
             ].map(v => (
               <button 
                 key={v.id}
