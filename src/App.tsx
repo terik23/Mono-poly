@@ -160,6 +160,12 @@ export default function Game() {
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   
+  const retryConnection = () => {
+    missingTablesRef.current.clear();
+    setMissingTables([]);
+    fetchData(gameId);
+    addToast("Re-scanning database for new tables...", "info");
+  };
   // Auto-follow logic
   useEffect(() => {
     if (isFollowing && currentPlayer && scrollContainerRef.current) {
@@ -1798,6 +1804,12 @@ export default function Game() {
                        </div>
                      </div>
                      <p className="text-[9px] text-red-700 leading-relaxed font-medium">To enable Chat, Friends, and Companies, you must run the SQL script below in your Supabase SQL Editor.</p>
+                     <button 
+                       onClick={retryConnection}
+                       className="w-full py-3 bg-red-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg hover:bg-black transition-all"
+                     >
+                       Retry Connection
+                     </button>
                    </div>
                  )}
 
