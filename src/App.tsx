@@ -21,6 +21,7 @@ import {
   History, 
   Users, 
   Send,
+  Target,
   Home,
   Landmark,
   Timer,
@@ -33,7 +34,9 @@ import {
   Coins,
   ArrowRightLeft,
   Skull,
-  Bell
+  Bell,
+  Plus,
+  Minus
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -60,6 +63,23 @@ interface Stock {
   price: number;
   history: { time: string; price: number }[];
   change: number;
+}
+
+interface Message {
+  id: string;
+  player_id: string;
+  player_name: string;
+  text: string;
+  created_at: string;
+}
+
+interface SocialConnection {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  status: 'pending' | 'accepted';
+  sender_name?: string;
+  receiver_name?: string;
 }
 
 interface Player {
@@ -98,12 +118,17 @@ export default function Game() {
   const [logs, setLogs] = useState<string[]>([]);
   const [rolling, setRolling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [diceVisual, setDiceVisual] = useState([1]);
+  const [diceVisual, setDiceVisual] = useState([1, 1]);
   const [showSidebar, setShowSidebar] = useState(false);
   const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats'>('board');
   const [zoom, setZoom] = useState(0.4);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [showChat, setShowChat] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState<Player | null>(null);
+  const [friends, setFriends] = useState<SocialConnection[]>([]);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   
   // Auto-follow logic
@@ -113,27 +138,51 @@ export default function Game() {
       if (space) {
         const container = scrollContainerRef.current;
         
-        // Ensure we are zoomed in for detail
-        if (zoom < 1.4) {
-          setZoom(1.5);
-          return;
-        }
-
         const spaceRect = space.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
         
-        // Robust centering using bounding rects to handle scaling/transforms correctly
-        const scrollX = container.scrollLeft + (spaceRect.left + spaceRect.width / 2) - (containerRect.left + containerRect.width / 2);
-        const scrollY = container.scrollTop + (spaceRect.top + spaceRect.height / 2) - (containerRect.top + containerRect.height / 2);
-        
+        // Robust centering using bounding rects
+        // We use a small threshold to avoid jitter if it's already mostly centered
+        const centerX = spaceRect.left + spaceRect.width / 2;
+        const centerY = spaceRect.top + spaceRect.height / 2;
+        const viewportCenterX = containerRect.left + containerRect.width / 2;
+        const viewportCenterY = containerRect.top + containerRect.height / 2;
+
+        const diffX = centerX - viewportCenterX;
+        const diffY = centerY - viewportCenterY;
+
+        if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) {
+          container.scrollTo({
+            left: container.scrollLeft + diffX,
+            top: container.scrollTop + diffY,
+            behavior: 'smooth'
+          });
+        }
+      }
+    }
+  }, [isFollowing, currentPlayer?.position, currentPlayer?.id, zoom]);
+
+  const centerOnMe = () => {
+    if (currentPlayer && scrollContainerRef.current) {
+      const space = document.getElementById(`space-${currentPlayer.position}`);
+      if (space) {
+        const container = scrollContainerRef.current;
+        const spaceRect = space.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const centerX = spaceRect.left + spaceRect.width / 2;
+        const centerY = spaceRect.top + spaceRect.height / 2;
+        const viewportCenterX = containerRect.left + containerRect.width / 2;
+        const viewportCenterY = containerRect.top + containerRect.height / 2;
+        const diffX = centerX - viewportCenterX;
+        const diffY = centerY - viewportCenterY;
         container.scrollTo({
-          left: scrollX,
-          top: scrollY,
+          left: container.scrollLeft + diffX,
+          top: container.scrollTop + diffY,
           behavior: 'smooth'
         });
       }
     }
-  }, [isFollowing, currentPlayer?.position, currentPlayer, zoom]);
+  };
 
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
   const [stocks, setStocks] = useState<Stock[]>([
@@ -169,11 +218,29 @@ export default function Game() {
       
       if (propError) throw propError;
       if (propData) setProperties(propData);
+
+      // Fetch Chat
+      const { data: msgData } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('game_id', gid)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (msgData) setMessages(msgData.reverse());
+
+      // Fetch Social
+      if (currentPlayer) {
+        const { data: socialData } = await supabase
+          .from('social_connections')
+          .select('*')
+          .or(`sender_id.eq.${currentPlayer.id},receiver_id.eq.${currentPlayer.id}`);
+        if (socialData) setFriends(socialData);
+      }
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
       setErrorMsg(`Data Synchronization Error: ${e.message}`);
     }
-  }, []);
+  }, [currentPlayer?.id]);
 
   useEffect(() => {
     // Analytics Sync and Health check
@@ -220,19 +287,36 @@ export default function Game() {
   useEffect(() => {
     const interval = setInterval(() => {
       setStocks(prev => prev.map(s => {
-        // High volatility with occasional extreme swings (Insane dips/ups)
+        // Higher volatility for "Tycoon" feel
         const isExtreme = Math.random() < 0.15; 
-        const volatility = isExtreme ? 0.6 : 0.08;
-        const direction = Math.random() < 0.5 ? -1 : 1;
-        const change = direction * Math.random() * volatility;
+        const volatility = isExtreme ? 0.45 : 0.08;
+        const direction = Math.random() < 0.52 ? 1 : -1; // Slight upward bias for growth
         
-        const newPrice = Math.max(0.1, s.price * (1 + change));
-        const newHistory = [...s.history.slice(-19), { time: new Date().toLocaleTimeString(), price: newPrice }];
+        // Occasional "Moon" event
+        const isMoon = Math.random() < 0.02;
+        const currentChange = isMoon ? 1.5 : (direction * Math.random() * volatility);
+        const newPrice = Math.max(5.0, s.price * (1 + currentChange)); // Minimum price $5
+        
+        if (isMoon) {
+          addToast(`${s.name} IS MOONING! 🚀`, "success");
+        }
+        
+        // Ensure history always has at least 20 points for smooth charts
+        const currentHistory = s.history.length > 0 ? s.history : Array.from({ length: 20 }).map((_, i) => ({
+          time: new Date(Date.now() - (20 - i) * 30000).toLocaleTimeString(),
+          price: s.price
+        }));
+
+        const newHistory = [...currentHistory.slice(-19), { 
+          time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }), 
+          price: Number(newPrice.toFixed(2)) 
+        }];
+
         return { 
           ...s, 
           price: Number(newPrice.toFixed(2)), 
           history: newHistory,
-          change: Number((change * 100).toFixed(2))
+          change: Number((currentChange * 100).toFixed(2))
         };
       }));
 
@@ -255,7 +339,7 @@ export default function Game() {
         });
         return prev;
       });
-    }, 30000); // 30 seconds per update for slower market
+    }, 10000); // 10 seconds per update for more activity
     return () => clearInterval(interval);
   }, []);
 
@@ -392,6 +476,21 @@ export default function Game() {
           }
         }
       })
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages'
+      }, (payload) => {
+        const msg = payload.new as Message;
+        setMessages(prev => [...prev.slice(-49), msg]);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'social_connections'
+      }, () => {
+        fetchData(gameId);
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           console.log("Realtime connected for game:", gameId);
@@ -488,13 +587,14 @@ export default function Game() {
     
     // Dice animation shuffle
     for(let i = 0; i < 10; i++) {
-      setDiceVisual([Math.floor(Math.random() * 6) + 1]);
+      setDiceVisual([Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1]);
       await new Promise(r => setTimeout(r, 60));
     }
 
     const d1 = Math.floor(Math.random() * 6) + 1;
-    setDiceVisual([d1]);
-    const move = d1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    setDiceVisual([d1, d2]);
+    const move = d1 + d2;
     
     let nextPos = (currentPlayer.position + move) % 200;
     let balance = currentPlayer.balance;
@@ -647,6 +747,48 @@ export default function Game() {
     }
   };
 
+  const sendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !currentPlayer) return;
+
+    const msg = {
+      game_id: gameId,
+      player_id: currentPlayer.id,
+      player_name: currentPlayer.name,
+      text: newMessage.trim(),
+    };
+
+    setNewMessage('');
+    await supabase.from('messages').insert(msg);
+  };
+
+  const sendFriendRequest = async (receiverId: string) => {
+    if (!currentPlayer) return;
+    const { error } = await supabase.from('social_connections').insert({
+      sender_id: currentPlayer.id,
+      receiver_id: receiverId,
+      status: 'pending'
+    });
+    if (error) {
+      if (error.code === '23505') addToast("Request already sent", "info");
+      else addToast("Social error", "error");
+    } else {
+      addToast("Friend request sent!", "success");
+    }
+  };
+
+  const acceptFriendRequest = async (requestId: string) => {
+    await supabase.from('social_connections').update({ status: 'accepted' }).eq('id', requestId);
+    addToast("Accepted friend request", "success");
+  };
+
+  const isFriend = (playerId: string) => {
+    return friends.some(f => 
+      f.status === 'accepted' && 
+      (f.sender_id === playerId || f.receiver_id === playerId)
+    );
+  };
+
   if (!isJoined) {
     return (
       <div className="min-h-screen bg-[#fcfcf9] flex items-center justify-center p-4 font-sans text-gray-900 overflow-hidden">
@@ -778,11 +920,6 @@ export default function Game() {
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse shadow-[0_0_8px_rgba(37,99,235,0.4)]"></div>
             <span className="text-[9px] font-bold tracking-widest uppercase opacity-70 font-mono hidden sm:inline">Online</span>
           </div>
-          <div className="h-8 w-[1px] bg-black/5 hidden sm:block"></div>
-          <div className="flex flex-col">
-            <span className="text-[8px] uppercase tracking-widest opacity-40 font-bold">Balance</span>
-            <span className="text-lg md:text-xl font-mono text-blue-700 font-bold leading-none">${currentPlayer?.balance.toLocaleString()}</span>
-          </div>
         </div>
         <div className="flex items-center space-x-4 md:space-x-8 italic font-serif">
           <button 
@@ -796,7 +933,10 @@ export default function Game() {
             <span className="text-gray-600 text-sm">{BOARD_SPACES[currentPlayer?.position || 0].name}</span>
           </div>
           <div className="w-[1px] h-8 bg-black/5 hidden sm:block"></div>
-          <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setSelectedProfile(currentPlayer)}
+            className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+          >
              <div className="flex flex-col text-right">
                 <span className="text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold">Player</span>
                 <span className="text-black text-[10px] md:text-xs font-bold font-sans uppercase tracking-tight">{currentPlayer?.name}</span>
@@ -804,30 +944,12 @@ export default function Game() {
              <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
                 {currentPlayer?.name.charAt(0)}
              </div>
-          </div>
+          </button>
         </div>
       </header>
 
       <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        {/* Global Stats HUD (Top) */}
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] pointer-events-none flex items-center gap-4">
-             {currentPlayer && (
-                <div className="bg-white/95 backdrop-blur-3xl border border-black/[0.1] shadow-[0_40px_100px_rgba(0,0,0,0.1)] px-12 py-6 rounded-full flex items-center gap-16 pointer-events-auto">
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-[.4em] font-black opacity-30 mb-2">CASH ON HAND</span>
-                      <span className="text-3xl font-mono font-black text-green-600">${currentPlayer.balance.toLocaleString()}</span>
-                    </div>
-                    <div className="w-px h-12 bg-black/10" />
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-[.4em] font-black opacity-30 mb-2">TOTAL NET WORTH</span>
-                      <span className="text-3xl font-mono font-black text-blue-600">${(currentPlayer.balance + Object.entries(playerStocks).reduce((acc, [s, a]) => {
-                        const stock = stocks.find(st => st.symbol === s);
-                        return acc + (stock?.price || 0) * (a as number);
-                      }, 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                    </div>
-                </div>
-             )}
-        </div>
+
         <div 
           ref={scrollContainerRef}
           className="flex-1 bg-[#e5e5e5] overflow-auto relative custom-scrollbar bg-[radial-gradient(#ccc_1px,transparent_1px)] [background-size:32px_32px]"
@@ -977,8 +1099,20 @@ export default function Game() {
                                 ease: "anticipate"
                               }
                             }}
-                            className="z-40 drop-shadow-[0_15px_30px_rgba(0,0,0,0.4)]"
+                            className="z-40 drop-shadow-[0_15px_30px_rgba(0,0,0,0.4)] cursor-pointer pointer-events-auto group/token"
+                            onClick={() => setSelectedProfile(p)}
                           >
+                            <AnimatePresence>
+                              {(isFriend(p.id) || p.id === currentPlayer?.id) && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black text-white text-[10px] font-black px-2 py-1 rounded shadow-xl uppercase tracking-widest z-50 pointer-events-none"
+                                >
+                                  {p.name}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                             <Plane 
                               className="w-7 h-7 md:w-12 md:h-12" 
                               style={{ 
@@ -1083,57 +1217,8 @@ export default function Game() {
                 )}
 
                 {currentPlayer && view === 'board' && (
-                  <div className="relative pointer-events-auto scale-150 transform">
-                    <div className="relative bg-white border border-black/10 p-12 rounded-3xl flex flex-col items-center min-w-[500px] shadow-2xl">
-                      <div className="text-sm uppercase tracking-[0.5em] font-black opacity-30 mb-8">YOUR TURN</div>
-                      
-                      <div className="flex gap-12 mb-14">
-                        <motion.div 
-                          animate={rolling ? { 
-                            rotateY: [0, 180, 360, 540, 720],
-                            rotateX: [0, 90, 180, 270, 360],
-                            scale: [1, 1.4, 0.8, 1.2, 1],
-                            z: [0, 50, -50, 20, 0]
-                          } : {}}
-                          transition={{ duration: 0.5, repeat: rolling ? Infinity : 0, ease: "easeInOut" }}
-                          className="w-24 h-24 md:w-32 md:h-32 bg-white border-4 border-black/10 rounded-2xl flex items-center justify-center shadow-xl relative preserve-3d"
-                         >
-                            <div className="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-white rounded-xl shadow-inner" />
-                            <div className="relative z-10 text-blue-600">
-                              {diceVisual[0] === 1 && <Dice1 className="w-16 h-16 md:w-20 md:h-20" />}
-                              {diceVisual[0] === 2 && <Dice2 className="w-16 h-16 md:w-20 md:h-20" />}
-                              {diceVisual[0] === 3 && <Dice3 className="w-16 h-16 md:w-20 md:h-20" />}
-                              {diceVisual[0] === 4 && <Dice4 className="w-16 h-16 md:w-20 md:h-20" />}
-                              {diceVisual[0] === 5 && <Dice5 className="w-16 h-16 md:w-20 md:h-20" />}
-                              {diceVisual[0] === 6 && <Dice6 className="w-16 h-16 md:w-20 md:h-20" />}
-                            </div>
-                         </motion.div>
-                      </div>
-
-                      <button 
-                        onClick={rollDice} 
-                        disabled={rolling} 
-                        className="px-12 md:px-20 py-5 md:py-8 bg-blue-600 text-white font-black uppercase tracking-[0.4em] text-[12px] md:text-lg hover:bg-black transition-all disabled:opacity-20 disabled:cursor-not-allowed rounded-full w-full shadow-2xl active:scale-95 flex items-center justify-center gap-4 group"
-                      >
-                        {rolling ? (
-                          <div className="flex gap-2">
-                             <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
-                             <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
-                             <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.4s]" />
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center">
-                            <div className="flex items-center gap-4">
-                              <Dices className="w-6 h-6 md:w-8 md:h-8 group-hover:rotate-12 transition-transform" />
-                              <span>ROLL</span>
-                            </div>
-                          </div>
-                        )}
-                      </button>
-                      
-
-
-                    </div>
+                  <div className="relative pointer-events-none w-full h-full">
+                    {/* Map is empty here, dice moved to global overlay */}
                   </div>
                 )}
                 {currentPlayer && view === 'transfer' && (
@@ -1314,6 +1399,48 @@ export default function Game() {
               </div>
             )}
 
+            {/* Friends list */}
+            {currentPlayer && friends.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20">Network Contacts</div>
+                  <div className="text-[10px] font-black text-green-600/50">{friends.filter(f => f.status === 'accepted').length} FRIENDS</div>
+                </div>
+                <div className="space-y-2">
+                  {friends.map(f => {
+                    const friendId = f.sender_id === currentPlayer.id ? f.receiver_id : f.sender_id;
+                    const friend = players.find(p => p.id === friendId);
+                    if (!friend) return null;
+                    return (
+                      <div 
+                        key={f.id} 
+                        onClick={() => setSelectedProfile(friend)}
+                        className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-2xl hover:border-blue-600/30 transition-all group cursor-pointer"
+                      >
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-[10px] font-mono shadow-sm" style={{ backgroundColor: friend.player_color + '22', color: friend.player_color }}>
+                          {friend.name.charAt(0)}
+                        </div>
+                        <div className="flex-1">
+                          <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{friend.name}</div>
+                          <div className="text-[8px] uppercase tracking-widest opacity-40 font-bold">
+                            {f.status === 'pending' ? 'Request Sent' : 'Online'}
+                          </div>
+                        </div>
+                        {f.status === 'pending' && f.receiver_id === currentPlayer.id && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); acceptFriendRequest(f.id); }}
+                            className="text-[8px] bg-blue-600 text-white px-2 py-1 rounded font-black uppercase tracking-widest hover:bg-black transition-all"
+                          >
+                            Accept
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* leaderboard */}
             <div className="flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
@@ -1322,7 +1449,7 @@ export default function Game() {
               </div>
               <div className="space-y-2 pb-4">
                 {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
-                  <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group">
+                  <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group cursor-pointer" onClick={() => setSelectedProfile(p)}>
                     <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
                     <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
                     <div className="flex-1">
@@ -1340,6 +1467,248 @@ export default function Game() {
         </aside>
       </main>
 
+      {/* Profile Modal */}
+      <AnimatePresence>
+        {selectedProfile && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedProfile(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+            />
+            <motion.div 
+              initial={{ scale: 0.9, y: 20, opacity: 0 }}
+              animate={{ scale: 1, y: 0, opacity: 1 }}
+              exit={{ scale: 0.9, y: 20, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col border border-black/10"
+            >
+              <div className="relative h-32 w-full" style={{ backgroundColor: selectedProfile.player_color }}>
+                <div className="absolute inset-0 bg-gradient-to-b from-black/20 to-transparent" />
+                <button 
+                  onClick={() => setSelectedProfile(null)}
+                  className="absolute top-6 right-6 w-10 h-10 bg-white/20 hover:bg-white/40 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="px-8 pb-10 -mt-16 relative flex flex-col items-center">
+                <div 
+                  className="w-32 h-32 rounded-[2rem] border-8 border-white shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6"
+                  style={{ backgroundColor: selectedProfile.player_color }}
+                >
+                  {selectedProfile.name.charAt(0)}
+                </div>
+                
+                <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">{selectedProfile.name}</h2>
+                <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-1">Tycoon Operator</span>
+
+                <div className="grid grid-cols-2 gap-4 w-full mt-10">
+                  <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
+                    <span className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-2">Cash Balance</span>
+                    <span className="text-xl font-mono font-black text-green-600">${selectedProfile.balance.toLocaleString()}</span>
+                  </div>
+                  <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
+                    <span className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-2">Properties</span>
+                    <span className="text-xl font-mono font-black text-blue-600">
+                      {properties.filter(p => p.owner_id === selectedProfile.id).length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="w-full mt-8 space-y-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Portfolio Details</div>
+                  <div className="max-h-48 overflow-y-auto w-full space-y-2 custom-scrollbar pr-2">
+                    {properties.filter(p => p.owner_id === selectedProfile.id).map(prop => {
+                      const space = BOARD_SPACES[prop.space_id];
+                      return (
+                        <div key={prop.space_id} className="flex items-center justify-between p-4 bg-gray-50/50 border border-black/[0.02] rounded-2xl">
+                          <div className="flex items-center gap-3">
+                            <div className="w-2 h-6 rounded-full" style={{ backgroundColor: space.color || '#ccc' }} />
+                            <span className="text-xs font-black uppercase tracking-tight">{space.name}</span>
+                          </div>
+                          <span className="text-[10px] font-mono opacity-40">${space.price}</span>
+                        </div>
+                      );
+                    })}
+                    {properties.filter(p => p.owner_id === selectedProfile.id).length === 0 && (
+                      <div className="text-center py-6 text-[10px] uppercase tracking-widest opacity-20 font-black italic">No assets acquired</div>
+                    )}
+                  </div>
+                </div>
+
+                {currentPlayer?.id !== selectedProfile.id && (
+                  <div className="w-full mt-8 pt-8 border-t border-black/5">
+                    {isFriend(selectedProfile.id) ? (
+                      <div className="w-full py-4 bg-green-50 text-green-600 text-[10px] font-black uppercase tracking-widest rounded-2xl flex items-center justify-center gap-2">
+                        <Users className="w-4 h-4" /> Friends
+                      </div>
+                    ) : (
+                      <>
+                        {friends.find(f => f.sender_id === selectedProfile.id && f.receiver_id === currentPlayer?.id && f.status === 'pending') ? (
+                          <button 
+                            onClick={() => {
+                              const req = friends.find(f => f.sender_id === selectedProfile.id && f.receiver_id === currentPlayer?.id && f.status === 'pending');
+                              if (req) acceptFriendRequest(req.id);
+                            }}
+                            className="w-full py-5 bg-blue-600 text-white text-[11px] font-black uppercase tracking-[0.2em] rounded-2xl hover:bg-black transition-all shadow-xl"
+                          >
+                            Accept Friend Request
+                          </button>
+                        ) : friends.find(f => f.sender_id === currentPlayer?.id && f.receiver_id === selectedProfile.id && f.status === 'pending') ? (
+                          <button disabled className="w-full py-5 bg-gray-100 text-gray-400 text-[11px] font-black uppercase tracking-[0.2em] rounded-2xl cursor-not-allowed">
+                            Request Pending
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={() => sendFriendRequest(selectedProfile.id)}
+                            className="w-full py-5 bg-black text-white text-[11px] font-black uppercase tracking-[0.2em] rounded-2xl hover:bg-blue-600 transition-all shadow-xl flex items-center justify-center gap-3"
+                          >
+                            <Plus className="w-4 h-4" /> Send Friend Request
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Chat UI */}
+      <AnimatePresence>
+        {showChat && (
+          <motion.div 
+            initial={{ opacity: 0, x: -50, scale: 0.95 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: -50, scale: 0.95 }}
+            className="fixed top-24 left-8 z-[120] w-80 h-[500px] bg-white rounded-[2rem] border border-black/10 shadow-[0_30px_90px_rgba(0,0,0,0.2)] flex flex-col overflow-hidden"
+          >
+            <div className="p-6 border-b border-black/5 bg-gray-50 flex justify-between items-center">
+              <div className="flex flex-col">
+                <span className="text-[9px] font-black uppercase tracking-widest opacity-40">Frequency 1</span>
+                <h3 className="text-sm font-black uppercase tracking-tight">World Chat</h3>
+              </div>
+              <button 
+                onClick={() => setShowChat(false)}
+                className="w-8 h-8 rounded-full border border-black/5 flex items-center justify-center hover:bg-black hover:text-white transition-all"
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+              {messages.map((m, idx) => (
+                <div key={m.id || idx} className={cn("flex flex-col gap-1", m.player_id === currentPlayer?.id ? "items-end" : "items-start")}>
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-[8px] font-black uppercase tracking-widest opacity-30">{m.player_name}</span>
+                  </div>
+                  <div className={cn(
+                    "px-4 py-3 rounded-2xl text-[12px] leading-relaxed max-w-[85%] shadow-sm",
+                    m.player_id === currentPlayer?.id ? "bg-blue-600 text-white rounded-tr-none" : "bg-gray-100 text-gray-800 rounded-tl-none border border-black/5"
+                  )}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {messages.length === 0 && (
+                <div className="h-full flex flex-col items-center justify-center opacity-10 gap-4 mt-20">
+                  <Send className="w-12 h-12" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">No messages yet</span>
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={sendMessage} className="p-4 bg-gray-50 border-t border-black/5 flex gap-2">
+              <input 
+                type="text" 
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                placeholder="Message Tycoons..."
+                className="flex-1 bg-white border border-black/10 rounded-xl px-4 py-2 text-[12px] outline-none focus:border-blue-500 transition-all font-medium"
+              />
+              <button className="w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center hover:bg-blue-600 transition-all active:scale-95 shadow-lg">
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="fixed top-24 left-10 z-[110]">
+        <button 
+          onClick={() => setShowChat(!showChat)}
+          className={cn(
+            "w-16 h-16 rounded-2xl flex items-center justify-center shadow-2xl transition-all active:scale-90 relative",
+            showChat ? "bg-black text-white" : "bg-white text-black hover:bg-gray-50 border border-black/10"
+          )}
+        >
+          <Briefcase className="w-6 h-6" />
+          {messages.length > 0 && !showChat && (
+            <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-600 rounded-full border-2 border-white flex items-center justify-center text-[8px] text-white font-black">
+              !
+            </div>
+          )}
+        </button>
+      </div>
+
+      {/* Fixed Dice Roll Area (Always Visible) */}
+      <AnimatePresence>
+        {isJoined && currentPlayer && (
+          <motion.div 
+            initial={{ x: 300 }}
+            animate={{ x: 0 }}
+            className="fixed bottom-32 right-8 z-[90] flex flex-col items-center gap-4 pointer-events-auto"
+          >
+            <motion.div 
+              animate={rolling ? { 
+                rotateY: [0, 360],
+                rotateX: [0, 360],
+                scale: [1, 1.2, 1],
+              } : {}}
+              transition={{ duration: 0.3, repeat: rolling ? Infinity : 0 }}
+              className="w-40 h-24 bg-white border border-black/10 rounded-3xl shadow-2xl flex items-center justify-center gap-4 relative overflow-hidden"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-white to-gray-50 opacity-50" />
+              {diceVisual.map((v, i) => (
+                <div key={i} className="relative z-10 text-blue-600">
+                  {v === 1 && <Dice1 className="w-10 h-10" />}
+                  {v === 2 && <Dice2 className="w-10 h-10" />}
+                  {v === 3 && <Dice3 className="w-10 h-10" />}
+                  {v === 4 && <Dice4 className="w-10 h-10" />}
+                  {v === 5 && <Dice5 className="w-10 h-10" />}
+                  {v === 6 && <Dice6 className="w-10 h-10" />}
+                </div>
+              ))}
+            </motion.div>
+
+            <button 
+              onClick={rollDice}
+              disabled={rolling}
+              className="group relative flex flex-col items-center justify-center w-28 h-28 bg-blue-600 hover:bg-black text-white rounded-[2.5rem] shadow-[0_25px_60px_rgba(37,99,235,0.45)] transition-all active:scale-90 disabled:opacity-50 disabled:grayscale border-4 border-white/20"
+            >
+              <div className="absolute inset-0 bg-gradient-to-tr from-white/10 to-transparent pointer-events-none" />
+              {rolling ? (
+                 <div className="flex gap-1.5">
+                    <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
+                    <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.1s]" />
+                    <div className="w-2 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
+                 </div>
+              ) : (
+                <>
+                  <Dices className="w-10 h-10 mb-1 group-hover:rotate-12 transition-transform drop-shadow-lg" />
+                  <span className="text-[11px] font-black tracking-[0.2em]">ROLL</span>
+                </>
+              )}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Navigation HUD (Floating at bottom of screen) */}
       <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black/90 backdrop-blur-2xl rounded-3xl p-3 border border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.5)] gap-6 pointer-events-auto scale-90 md:scale-100">
           <div className="flex border-r border-white/10 pr-4 gap-2">
@@ -1348,14 +1717,14 @@ export default function Game() {
               className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
               title="Zoom In"
             >
-              <TrendingUp className="w-5 h-5 text-green-400" />
+              <Plus className="w-5 h-5 text-green-400" />
             </button>
             <button 
               onClick={() => setZoom(prev => Math.max(0.1, prev - 0.1))}
               className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
               title="Zoom Out"
             >
-                <TrendingDown className="w-5 h-5 text-red-400" />
+                <Minus className="w-5 h-5 text-red-400" />
             </button>
             <button 
               onClick={() => setIsFollowing(!isFollowing)}
@@ -1367,6 +1736,13 @@ export default function Game() {
             >
               <MapPin className="w-5 h-5" />
               <span className="text-[10px] uppercase tracking-widest font-black">{isFollowing ? 'ON' : 'OFF'}</span>
+            </button>
+            <button 
+              onClick={centerOnMe}
+              className="p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
+              title="Find My Player"
+            >
+              <Target className="w-5 h-5 text-blue-400" />
             </button>
           </div>
 
