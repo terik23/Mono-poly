@@ -67,6 +67,7 @@ interface Stock {
 
 interface Message {
   id: string;
+  game_id: string;
   player_id: string;
   player_name: string;
   text: string;
@@ -130,6 +131,7 @@ export default function Game() {
   const [selectedProfile, setSelectedProfile] = useState<Player | null>(null);
   const [friends, setFriends] = useState<SocialConnection[]>([]);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  const chatScrollRef = React.useRef<HTMLDivElement>(null);
   
   // Auto-follow logic
   useEffect(() => {
@@ -196,8 +198,8 @@ export default function Game() {
   const [isBotThinking, setIsBotThinking] = useState(false);
 
   const addToast = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
-    const id = Date.now();
-    setToasts(prev => [...prev, { id, message, type }]);
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev.filter(t => t.id !== id), { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
   };
 
@@ -226,7 +228,25 @@ export default function Game() {
         .eq('game_id', gid)
         .order('created_at', { ascending: false })
         .limit(50);
-      if (msgData) setMessages(msgData.reverse());
+      
+      if (msgData) {
+        setMessages(prev => {
+          const fetched = [...msgData].reverse();
+          const combined = [...prev, ...fetched];
+          // Filter duplicates using ID or composite key
+          const unique = combined.filter((msg, index, self) => 
+            index === self.findIndex((m) => (
+              m.id === msg.id || (m.player_id === msg.player_id && m.text === msg.text && m.created_at === msg.created_at)
+            ))
+          );
+          // Keep only last 100 in memory
+          return unique.sort((a, b) => {
+            const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return timeA - timeB;
+          }).slice(-100);
+        });
+      }
 
       // Fetch Social
       if (currentPlayer) {
@@ -236,11 +256,30 @@ export default function Game() {
           .or(`sender_id.eq.${currentPlayer.id},receiver_id.eq.${currentPlayer.id}`);
         if (socialData) setFriends(socialData);
       }
+
+      // 24 Hour Message Cleanup Logic (Silent Fail)
+      try {
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        await supabase.from('messages').delete().lt('created_at', oneDayAgo);
+      } catch (cleanErr) {
+        console.warn("Auto-cleanup failed:", cleanErr);
+      }
+
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
       setErrorMsg(`Data Synchronization Error: ${e.message}`);
     }
   }, [currentPlayer?.id]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+    if (showChat) {
+      fetchData(gameId);
+    }
+  }, [messages, showChat, fetchData, gameId]);
 
   useEffect(() => {
     // Analytics Sync and Health check
@@ -483,7 +522,12 @@ export default function Game() {
         table: 'messages'
       }, (payload) => {
         const msg = payload.new as Message;
-        setMessages(prev => [...prev.slice(-49), msg]);
+        if (msg.game_id === gameId) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev.slice(-99), msg];
+          });
+        }
       })
       .on('postgres_changes', { 
         event: '*', 
@@ -757,10 +801,15 @@ export default function Game() {
       player_id: currentPlayer.id,
       player_name: currentPlayer.name,
       text: newMessage.trim(),
+      created_at: new Date().toISOString()
     };
 
     setNewMessage('');
-    await supabase.from('messages').insert(msg);
+    const { error } = await supabase.from('messages').insert(msg);
+    if (error) {
+      console.error("Chat send error:", error);
+      addToast("Chat failed to send", "error");
+    }
   };
 
   const sendFriendRequest = async (receiverId: string) => {
@@ -1146,10 +1195,10 @@ export default function Game() {
             </div>
           </div>
         </div>
-        </div>
-      </LayoutGroup>
-    </div>
+      </div>
+    </LayoutGroup>
   </div>
+</div>
 
         {/* Sidebar Controls */}
         <aside className={cn(
@@ -1336,13 +1385,13 @@ export default function Game() {
                         </div>
                       </div>
                     </div>
-                    <div className="h-16 w-full">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={s.history}>
-                             <Area type="monotone" dataKey="price" stroke={s.change >= 0 ? '#16a34a' : '#dc2626'} fill={s.change >= 0 ? '#dcfce7' : '#fee2e2'} />
-                          </AreaChart>
-                       </ResponsiveContainer>
-                    </div>
+                        <div className="h-24 w-full bg-blue-50/30 rounded-xl overflow-hidden">
+                           <ResponsiveContainer width="100%" height={96}>
+                              <AreaChart data={s.history}>
+                                 <Area type="monotone" dataKey="price" stroke={s.change >= 0 ? '#16a34a' : '#dc2626'} fill={s.change >= 0 ? '#dcfce7' : '#fee2e2'} />
+                              </AreaChart>
+                           </ResponsiveContainer>
+                        </div>
                     <div className="flex gap-2">
                        <button onClick={() => buyStock(s.symbol, 1)} className="flex-1 py-2 bg-black text-white text-[10px] font-black uppercase rounded-lg">Buy 1</button>
                        <button onClick={() => sellStock(s.symbol, 1)} className="flex-1 py-2 bg-gray-200 text-black text-[10px] font-black uppercase rounded-lg">Sell 1</button>
@@ -1547,11 +1596,17 @@ export default function Game() {
               </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+            <div 
+              ref={chatScrollRef}
+              className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar"
+            >
               {messages.map((m, idx) => (
                 <div key={m.id || idx} className={cn("flex flex-col gap-1", m.player_id === currentPlayer?.id ? "items-end" : "items-start")}>
                   <div className="flex items-center gap-2 px-1">
-                    <span className="text-[8px] font-black uppercase tracking-widest opacity-30">{m.player_name}</span>
+                    <span className="text-[8px] font-black uppercase tracking-widest opacity-30">{m.player_name || 'Tycoon'}</span>
+                    <span className="text-[7px] opacity-20 font-mono">
+                      {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                    </span>
                   </div>
                   <div className={cn(
                     "px-4 py-3 rounded-2xl text-[12px] leading-relaxed max-w-[85%] shadow-sm",
@@ -1710,7 +1765,14 @@ export default function Game() {
             ].map(v => (
               <button 
                 key={v.id}
-                onClick={() => setView(v.id as any)}
+                onClick={() => {
+                  setView(v.id as any);
+                  if (v.id !== 'board') {
+                    setShowSidebar(true);
+                  } else {
+                    setShowSidebar(false);
+                  }
+                }}
                 className={cn(
                   "px-3 md:px-6 py-3 md:py-4 rounded-2xl flex items-center gap-2 md:gap-4 transition-all group shrink-0",
                   view === v.id ? "bg-white text-black font-black" : "text-white/40 hover:text-white"
