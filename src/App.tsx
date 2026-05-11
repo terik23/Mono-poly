@@ -10,6 +10,8 @@ import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { 
   Building2, 
   MapPin, 
+  Building,
+  ShieldAlert,
   Wallet, 
   History, 
   Users, 
@@ -31,7 +33,8 @@ import {
   Zap,
   Plus,
   Minus,
-  Camera
+  Camera,
+  Heart
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -67,6 +70,7 @@ interface Company {
   owner_name: string;
   name: string;
   base_price: number;
+  history?: { price: number; time: string }[];
   created_at: string;
 }
 
@@ -101,6 +105,7 @@ interface Player {
   name: string;
   password?: string;
   balance: number;
+  debt: number;
   position: number;
   last_roll_at: string | null;
   last_daily_at: string;
@@ -145,6 +150,7 @@ export default function Game() {
   const [friends, setFriends] = useState<SocialConnection[]>([]);
   const [empresaList, setEmpresaList] = useState<Company[]>([]);
   const [shareholders, setShareholders] = useState<Shareholder[]>([]);
+  const [moneyChanges, setMoneyChanges] = useState<{ id: string; amount: number; x: number; y: number }[]>([]);
   const [isCreatingEmpresa, setIsCreatingEmpresa] = useState(false);
   const [newEmpresaName, setNewEmpresaName] = useState('');
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
@@ -488,10 +494,18 @@ export default function Game() {
     const stock = stocks.find(s => s.symbol === symbol);
     if (!stock || !currentPlayer) return;
     const cost = stock.price * amount;
-    if (currentPlayer.balance < cost) {
-      addToast("Insufficient funds for stocks", "error");
+    
+    // Loan check: Have at least 50%
+    const canAfford = currentPlayer.balance >= cost;
+    const canLoan = currentPlayer.balance >= cost * 0.5;
+
+    if (!canAfford && !canLoan) {
+      addToast("Insufficient funds (Requires 50% for Loan)", "error");
       return;
     }
+
+    const downPayment = canAfford ? cost : cost * 0.5;
+    const loanAmount = canAfford ? 0 : (cost * 0.5) * 1.25;
 
     const newAmount = (playerStocks[symbol] || 0) + amount;
     
@@ -514,8 +528,11 @@ export default function Game() {
       [symbol]: newAmount
     }));
 
-    handleBalanceUpdate(currentPlayer.id, -cost);
-    addToast(`Purchased ${amount} shares of ${stock.name}`, "success");
+    handleBalanceUpdate(currentPlayer.id, -downPayment);
+    if (loanAmount > 0) {
+      updateDebt(currentPlayer.id, loanAmount);
+      addToast(`Loan approved: $${loanAmount.toFixed(0)} added to debt`, "info");
+    }
   };
 
   const sellStock = async (symbol: string, amount: number) => {
@@ -600,15 +617,26 @@ export default function Game() {
     const company = empresaList.find(c => c.id === companyId);
     if (!company) return;
 
+    // RULE: CANNOT BUY YOUR OWN COMPANY
+    if (company.owner_id === currentPlayer.id) {
+      addToast("You cannot invest in your own company's private shares.", "error");
+      return;
+    }
+
     const owner = players.find(p => p.id === company.owner_id);
     const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
     const pricePerShare = company.base_price * multiplier;
     const totalCost = pricePerShare * shares;
+    const canAfford = currentPlayer.balance >= totalCost;
+    const canLoan = currentPlayer.balance >= totalCost * 0.5;
 
-    if (currentPlayer.balance < totalCost) {
-      addToast("Insufficient funds for investment", "error");
+    if (!canAfford && !canLoan) {
+      addToast("Insufficient funds even for a loan (Requires 50%)", "error");
       return;
     }
+
+    const downPayment = canAfford ? totalCost : totalCost * 0.5;
+    const loanAmount = canAfford ? 0 : (totalCost * 0.5) * 1.25;
 
     const { error } = await supabase
       .from('shareholders')
@@ -619,26 +647,52 @@ export default function Game() {
       });
 
     if (error) {
-      console.error("Investment Error:", error);
-      if (error.code === '42P01' || error.code === 'PGRST205') {
+      console.error("Investment Error Details:", error);
+      if (error.code === '42P01' || error.code === 'PGRST205' || error.code === '23503') {
+        addToast("Database Sync Delay. Local fallback active.", "info");
+        
+        // Fallback for local play
         setShareholders(prev => [...prev, {
           id: Math.random().toString(),
           company_id: companyId,
           player_id: currentPlayer.id,
           shares: shares
         }]);
-        addToast("Investment recorded in local memory", "info");
       } else {
-        addToast("Investment failed", "error");
+        addToast(`Investment failed: ${error.message}`, "error");
         return;
       }
     }
 
-    await handleBalanceUpdate(currentPlayer.id, -totalCost);
+    await handleBalanceUpdate(currentPlayer.id, -downPayment);
+    if (loanAmount > 0) {
+      updateDebt(currentPlayer.id, loanAmount);
+      addToast(`Financing applied: $${loanAmount.toFixed(0)} debt`, "info");
+    }
     addToast(`Invested in ${company.name}!`, "success");
   };
 
+  const updateDebt = async (playerId: string, delta: number) => {
+     const player = players.find(p => p.id === playerId);
+     if (!player) return;
+     const newDebt = Math.max(0, (player.debt || 0) + delta);
+     
+     setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, debt: newDebt } : p));
+     if (currentPlayer?.id === playerId) {
+        setCurrentPlayer(prev => prev ? { ...prev, debt: newDebt } : null);
+     }
+
+     await supabase.from('players').update({ debt: newDebt }).eq('id', playerId);
+  };
+
   const handleBalanceUpdate = async (playerId: string, delta: number) => {
+    // Show visual indicator if it's the current player
+    if (currentPlayer && playerId === currentPlayer.id) {
+       const id = Math.random().toString();
+       setMoneyChanges(prev => [...prev, { id, amount: delta, x: window.innerWidth / 2, y: window.innerHeight / 2 }]);
+       setTimeout(() => setMoneyChanges(prev => prev.filter(m => m.id !== id)), 2000);
+    }
+
     const player = players.find(p => p.id === playerId);
     if (!player) return;
     
@@ -783,8 +837,45 @@ export default function Game() {
       fetchData(gameId);
     }
 
+    // Wealth Tax Effect (5 minutes)
+    const taxInterval = setInterval(async () => {
+      if (currentPlayer && currentPlayer.balance >= 1000000) {
+        const taxAmount = Math.floor(currentPlayer.balance * 0.005); // 0.5%
+        await handleBalanceUpdate(currentPlayer.id, -taxAmount);
+        addToast(`Wealth Tax Applied: -$${taxAmount.toLocaleString()}`, "error");
+      }
+    }, 5 * 60 * 1000);
+
+    // Debt Repayment System (30 seconds)
+    const debtInterval = setInterval(async () => {
+       if (currentPlayer && (currentPlayer.debt || 0) > 0) {
+          const installment = Math.min(currentPlayer.balance * 0.05, currentPlayer.debt || 0, 5000);
+          if (installment > 0) {
+             await handleBalanceUpdate(currentPlayer.id, -installment);
+             await updateDebt(currentPlayer.id, -installment);
+             addToast(`Debt Repayment: -$${installment.toLocaleString()}`, "info");
+          }
+       }
+    }, 30000);
+
     // Periodic cleanup/sync check
-    const syncInterval = setInterval(() => fetchData(gameId), 30000);
+    const syncInterval = setInterval(() => {
+      fetchData(gameId);
+      
+      // Update Empresa History (if owner)
+      if (currentPlayer) {
+        empresaList.filter(c => c.owner_id === currentPlayer.id).forEach(async (c) => {
+          const owner = players.find(p => p.id === c.owner_id);
+          if (!owner) return;
+          const currentPrice = c.base_price * (Math.max(100, owner.balance) / 10000);
+          
+          const newHistory = [...(c.history || [])].slice(-19); // Keep last 20
+          newHistory.push({ price: currentPrice, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+          
+          await supabase.from('empresa').update({ history: newHistory }).eq('id', c.id);
+        });
+      }
+    }, 30000);
     
     // Fetch initial data
     fetchData(gameId);
@@ -923,12 +1014,35 @@ export default function Game() {
       const owner = players.find(p => p.id === ownership.owner_id);
       if (owner) {
         const rent = space.rent ? space.rent[ownership.buildings] : 20;
-        balance -= rent;
+        
+        // Loan / Financing logic for Rent
+        const canAfford = balance >= rent;
+        const canLoan = balance >= rent * 0.5;
+
+        if (canAfford) {
+          balance -= rent;
+          setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
+        } else if (canLoan) {
+          const downPayment = rent * 0.5;
+          const loanDebt = (rent * 0.5) * 1.25;
+          balance -= downPayment;
+          updateDebt(currentPlayer.id, loanDebt);
+          setLogs(prev => [`FINANCED RENT: PAID $${downPayment} + $${loanDebt.toFixed(0)} DEBT TO ${owner.name.toUpperCase()}`, ...prev]);
+          addToast(`Emergency Rent Loan: $${loanDebt.toFixed(0)} debt`, "error");
+        } else {
+          // If totally broke, they just lose what they have and take the rest as debt
+          const paid = Math.max(0, balance);
+          const remaining = rent - paid;
+          const loanDebt = remaining * 1.5; // Penalty for being totally broke
+          balance = 0;
+          updateDebt(currentPlayer.id, loanDebt);
+          setLogs(prev => [`BANKRUPTCY AVOIDED: $${loanDebt.toFixed(0)} DEBT CREATED`, ...prev]);
+        }
+
         await supabase
           .from('players')
           .update({ balance: owner.balance + rent })
           .eq('id', owner.id);
-        setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
       }
     }
 
@@ -948,7 +1062,16 @@ export default function Game() {
   const buyProperty = async (spaceId: number) => {
     if (!currentPlayer) return;
     const space = BOARD_SPACES[spaceId];
-    if (!space.price || currentPlayer.balance < space.price) return;
+    if (!space.price) return;
+
+    const cost = space.price;
+    const canAfford = currentPlayer.balance >= cost;
+    const canLoan = currentPlayer.balance >= cost * 0.5;
+
+    if (!canAfford && !canLoan) {
+      addToast("Insufficient funds for property or financing", "error");
+      return;
+    }
 
     const { error: propError } = await supabase
       .from('properties')
@@ -960,13 +1083,16 @@ export default function Game() {
       });
 
     if (!propError) {
-      setLogs(prev => [`Bought ${space.name} for $${space.price}`, ...prev]);
+      const downPayment = canAfford ? cost : cost * 0.5;
+      const loanDebt = canAfford ? 0 : (cost * 0.5) * 1.25;
       
-      const newBalance = currentPlayer.balance - space.price;
+      const newBalance = currentPlayer.balance - downPayment;
+      
+      setLogs(prev => [`Bought ${space.name} ${loanDebt > 0 ? '(Financed)' : ''} for $${downPayment}`, ...prev]);
       
       // Update local state for immediate feedback
       setProperties(prev => [...prev, {
-        id: Math.random().toString(), // Temporary ID until next fetch
+        id: Math.random().toString(), 
         space_id: spaceId,
         game_id: gameId,
         owner_id: currentPlayer.id,
@@ -976,6 +1102,11 @@ export default function Game() {
       
       setCurrentPlayer({ ...currentPlayer, balance: newBalance });
       setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? { ...p, balance: newBalance } : p));
+      
+      if (loanDebt > 0) {
+        updateDebt(currentPlayer.id, loanDebt);
+        addToast(`Property financed: $${loanDebt.toFixed(0)} debt added`, "info");
+      }
 
       await supabase
         .from('players')
@@ -1106,6 +1237,7 @@ export default function Game() {
   const acceptFriendRequest = async (requestId: string) => {
     await supabase.from('social_connections').update({ status: 'accepted' }).eq('id', requestId);
     addToast("Accepted friend request", "success");
+    setSelectedProfile(null);
   };
 
   const isFriend = (playerId: string) => {
@@ -1207,8 +1339,29 @@ export default function Game() {
 
   return (
     <div className="h-screen bg-[#fcfcf9] text-gray-900 font-sans flex flex-col overflow-hidden select-none">
+      {/* Floating Money Labels */}
+      <AnimatePresence>
+        {moneyChanges.map(m => (
+          <motion.div
+            key={m.id}
+            initial={{ opacity: 0, scale: 0.5, y: -50 }}
+            animate={{ opacity: 1, scale: 1.5, y: -200 }}
+            exit={{ opacity: 0, scale: 0.8, y: -300 }}
+            className={cn(
+              "fixed left-1/2 -translate-x-1/2 z-[9999] pointer-events-none font-black text-4xl drop-shadow-2xl uppercase tracking-tighter italic",
+              m.amount > 0 ? "text-emerald-500" : "text-rose-600"
+            )}
+          >
+            {m.amount > 0 ? '+' : ''}${Math.abs(m.amount).toLocaleString()}
+            <div className="text-[10px] text-center opacity-50 not-italic tracking-[0.2em] -mt-1 uppercase">
+              {m.amount > 0 ? 'Transaction Received' : 'Capital Reduction'}
+            </div>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+
       {/* Toasts (Apple Style) */}
-      <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-[400px] px-4 pointer-events-none">
+      <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[1000] flex flex-col gap-2 w-full max-w-[400px] px-4 pointer-events-none">
         <AnimatePresence>
           {toasts.map(t => (
             <motion.div 
@@ -1374,7 +1527,11 @@ export default function Game() {
                       <span className="text-[8px] md:text-[10px] font-bold uppercase tracking-tight text-gray-900 leading-tight">
                         {space.name}
                       </span>
-                      {space.price && <span className="text-[7px] md:text-[9px] font-mono text-black/50 mt-auto font-bold">${space.price}</span>}
+                      {space.price && (
+                        <span className="text-[7px] md:text-[9px] font-mono mt-auto font-bold text-black/50">
+                          ${space.price}
+                        </span>
+                      )}
                     </div>
 
                     {ownership && ownership.buildings > 0 && (
@@ -1435,16 +1592,17 @@ export default function Game() {
                             <AnimatePresence>
                               {(isFriend(p.id) || p.id === currentPlayer?.id) && (
                                 <motion.div
-                                  initial={{ opacity: 0, y: 10 }}
-                                  animate={{ opacity: 1, y: 0 }}
-                                  className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black text-white text-[10px] font-black px-2 py-1 rounded shadow-xl uppercase tracking-widest z-50 pointer-events-none"
+                                  initial={{ opacity: 0, y: 10, scale: 0.8 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black/90 backdrop-blur-md text-white text-[10px] font-black px-3 py-1.5 rounded-full shadow-2xl uppercase tracking-[0.1em] z-50 pointer-events-none flex items-center gap-2 border border-white/20"
                                 >
+                                  {isFriend(p.id) && <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500" />}
                                   {p.name}
                                 </motion.div>
                               )}
                             </AnimatePresence>
                             <Plane 
-                              className="w-7 h-7 md:w-12 md:h-12" 
+                              className="w-7 h-7 md:w-12 md:h-12"
                               style={{ 
                                 fill: p.player_color, 
                                 stroke: 'white', 
@@ -1715,35 +1873,99 @@ export default function Game() {
                       const price = c.base_price * multiplier;
                       const myShares = shareholders.filter(s => s.company_id === c.id && s.player_id === currentPlayer?.id).reduce((acc, s) => acc + s.shares, 0);
 
+                      // Generate stable chart data for visual polish
+                      const chartData = c.history?.length ? c.history : [
+                        { price: price * 0.92, time: '08:00' },
+                        { price: price * 0.95, time: '09:00' },
+                        { price: price * 0.98, time: '10:00' },
+                        { price: price, time: '11:00' }
+                      ];
+
                       return (
-                        <div key={c.id} className="bg-white border border-black/5 p-4 rounded-3xl shadow-sm space-y-4">
-                          <div className="flex justify-between items-start">
-                            <div>
-                               <div className="text-[8px] font-black uppercase text-blue-600 leading-none mb-1">Founder: {c.owner_name}</div>
-                               <div className="text-sm font-black uppercase">{c.name}</div>
+                        <div key={c.id} className="bg-white border border-black/5 p-6 rounded-[2rem] shadow-sm hover:shadow-md transition-all group overflow-hidden">
+                          <div className="flex justify-between items-start mb-6">
+                            <div className="flex items-center gap-4">
+                               <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
+                                  <Building2 className="w-6 h-6" />
+                               </div>
+                               <div>
+                                 <h3 className="text-sm font-black uppercase text-gray-900 leading-none mb-1">{c.name}</h3>
+                                 <div className="flex items-center gap-2">
+                                    <span className="text-[8px] font-black uppercase text-blue-600">CEO: {c.owner_name}</span>
+                                    <div className="w-1 h-1 bg-black/10 rounded-full" />
+                                    <span className={cn("text-[8px] font-black uppercase", multiplier >= 1 ? "text-green-500" : "text-amber-500")}>
+                                      {multiplier >= 1.5 ? 'Market Dominance' : multiplier >= 1 ? 'Stable' : 'Volatile'}
+                                    </span>
+                                 </div>
+                               </div>
                             </div>
                             <div className="text-right">
-                               <div className="text-lg font-mono font-black">${price.toFixed(0)}</div>
-                               <div className={cn("text-[8px] font-black uppercase", multiplier >= 1 ? "text-green-600" : "text-red-600")}>
-                                  Valuation: {multiplier >= 1 ? 'GROWING' : 'RECESSION'}
-                               </div>
+                              <div className="text-xl font-mono font-black text-gray-900">${price.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                              <div className="text-[8px] font-black uppercase text-gray-400 flex items-center justify-end gap-1">
+                                <TrendingUp className="w-2 h-2" />
+                                Market Valuation
+                              </div>
                             </div>
                           </div>
 
+                          {/* Enterprise Performance Chart */}
+                          <div className="h-20 w-full mb-6">
+                             <ResponsiveContainer width="100%" height="100%">
+                               <AreaChart data={chartData}>
+                                 <defs>
+                                   <linearGradient id={`priceGrad-${c.id}`} x1="0" y1="0" x2="0" y2="1">
+                                     <stop offset="5%" stopColor="#2563eb" stopOpacity={0.1}/>
+                                     <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
+                                   </linearGradient>
+                                 </defs>
+                                 <Area 
+                                   type="monotone" 
+                                   dataKey="price" 
+                                   stroke="#2563eb" 
+                                   strokeWidth={2}
+                                   fillOpacity={1} 
+                                   fill={`url(#priceGrad-${c.id})`} 
+                                 />
+                               </AreaChart>
+                             </ResponsiveContainer>
+                          </div>
+
+                          {/* Locations / Buildings Display */}
+                          <div className="flex items-center gap-3 mb-6 p-4 bg-gray-50 rounded-[1.5rem] border border-black/[0.02]">
+                             <div className="flex -space-x-1.5">
+                               {[...Array(Math.min(5, Math.ceil(multiplier * 2)))].map((_, i) => (
+                                 <div key={i} className="w-9 h-9 bg-white border border-black/5 rounded-xl flex items-center justify-center shadow-sm hover:scale-110 transition-transform cursor-pointer group/loc">
+                                   <Building className="w-5 h-5 text-blue-600" />
+                                   <div className="absolute -top-8 bg-black text-white text-[7px] px-2 py-1 rounded-md opacity-0 group-hover/loc:opacity-100 transition-opacity">Asset Unit</div>
+                                 </div>
+                               ))}
+                             </div>
+                             <div className="flex-1">
+                                <div className="text-[10px] font-black uppercase text-gray-900 tracking-tight leading-none mb-0.5">
+                                  {Math.max(1, Math.floor(multiplier * 5))} Global Infrastructure
+                                </div>
+                                <div className="text-[8px] font-bold uppercase text-gray-400 tracking-widest leading-none">Economic Presence</div>
+                             </div>
+                          </div>
+
                           {/* Investors List */}
-                          <div className="space-y-1">
-                            <div className="text-[7px] font-black uppercase opacity-30">Shareholders</div>
-                            <div className="flex flex-wrap gap-1">
+                          <div className="space-y-2 mb-6">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black uppercase opacity-20 tracking-widest">Shareholders</span>
+                              <span className="text-[8px] font-mono opacity-40">{shareholders.filter(s => s.company_id === c.id).length} Active</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
                               {shareholders.filter(s => s.company_id === c.id).map((s, idx) => {
                                 const investor = players.find(p => p.id === s.player_id);
                                 return (
-                                  <div key={idx} className="bg-gray-50 border border-black/[0.02] px-2 py-0.5 rounded-md text-[7px] font-black uppercase text-gray-500">
-                                    {investor?.name || 'Unknown'} ({s.shares})
+                                  <div key={idx} className="bg-gray-50 border border-black/[0.03] px-2.5 py-1 rounded-lg text-[8px] font-black uppercase text-gray-600 flex items-center gap-1.5">
+                                    <div className="w-1 h-1 rounded-full bg-blue-500" />
+                                    {investor?.name || 'Venture Fund'} <span className="opacity-40">{s.shares} Sh</span>
                                   </div>
                                 );
                               })}
                               {shareholders.filter(s => s.company_id === c.id).length === 0 && (
-                                <div className="text-[7px] font-black uppercase opacity-20 italic">Publicly Traded</div>
+                                <div className="text-[8px] font-black uppercase opacity-20 italic">Fully Privatized</div>
                               )}
                             </div>
                           </div>
@@ -1751,10 +1973,18 @@ export default function Game() {
                           <div className="flex gap-2">
                              <button 
                                onClick={() => investInEmpresa(c.id, 1)}
-                               disabled={!currentPlayer || currentPlayer.balance < price}
-                               className="flex-1 py-3 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl disabled:opacity-30"
+                               disabled={!currentPlayer || currentPlayer.balance < price || c.owner_id === currentPlayer.id}
+                               className="flex-1 py-4 bg-gray-900 text-white text-[10px] font-black uppercase rounded-2xl disabled:opacity-30 flex items-center justify-center gap-2 hover:bg-black transition-colors"
                              >
-                               Invest 1 Share
+                               {c.owner_id === currentPlayer?.id ? (
+                                 <>
+                                   <History className="w-3 h-3 opacity-40" /> Owned
+                                 </>
+                               ) : (
+                                 <>
+                                   <Briefcase className="w-3 h-3" /> Buy Share
+                                 </>
+                               )}
                              </button>
                           </div>
                           {myShares > 0 && (
@@ -1885,9 +2115,9 @@ export default function Game() {
                   </div>
                   <div className="space-y-4">
                     {players.map(p => (
-                      <div key={p.id} onClick={() => setSelectedProfile(p)} className="bg-white border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between cursor-pointer hover:border-blue-200 transition-all">
+                      <div key={p.id} onClick={() => setSelectedProfile(p)} className="p-4 rounded-2xl flex items-center justify-between cursor-pointer border transition-all bg-white border-black/[0.03] hover:border-blue-200">
                         <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl overflow-hidden" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
+                          <div className="w-10 h-10 rounded-xl overflow-hidden relative" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
                              <div className="w-full h-full flex items-center justify-center font-mono font-black">
                                 {p.avatar_url ? (
                                   <img src={p.avatar_url} className="w-full h-full object-cover" alt={p.name} referrerPolicy="no-referrer" />
@@ -1897,7 +2127,9 @@ export default function Game() {
                              </div>
                           </div>
                           <div>
-                            <div className="text-[11px] font-black uppercase">{p.name}</div>
+                            <div className="text-[11px] font-black uppercase flex items-center gap-1.5 text-gray-900">
+                              {p.name}
+                            </div>
                             <div className="text-[9px] font-mono opacity-40">${p.balance.toLocaleString()}</div>
                           </div>
                         </div>
@@ -1941,9 +2173,9 @@ export default function Game() {
                  )}
 
                  <div className="bg-white border border-black/5 rounded-[2rem] overflow-hidden shadow-sm flex-1 flex flex-col min-h-[300px]">
-                   <div className="bg-black text-white p-6 font-mono text-[9px] relative group">
+                   <div className="bg-white text-white p-6 font-mono text-[9px] relative group">
                      <div className="flex items-center justify-between mb-4">
-                       <span className="text-blue-400 font-black tracking-widest text-[8px] uppercase">Supabase Setup Script</span>
+                       <span className="text-white font-black tracking-widest text-[8px] uppercase">Supabase Setup Script</span>
                        <button 
                          onClick={() => {
                            const sql = document.getElementById('setup-sql')?.innerText;
@@ -1957,11 +2189,40 @@ export default function Game() {
                          Copy Logic
                        </button>
                      </div>
-                     <div id="setup-sql" className="max-h-[300px] overflow-y-auto whitespace-pre custom-scrollbar text-green-400 opacity-90 leading-relaxed font-mono">
-{`/* 0. ADD AVATAR SUPPORT TO PLAYERS */
-ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+                     <div id="setup-sql" className="max-h-[300px] overflow-y-auto whitespace-pre custom-scrollbar text-[#f5f5f5] opacity-90 leading-relaxed font-mono">
+{`/* SUPABASE SETUP SCRIPT - RUN THIS IN SQL EDITOR */
 
-/* 1. CORE MESSAGES TABLE */
+-- 0. CORE EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 1. BASE TABLE UPDATES
+ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
+
+-- 2. CORPORATE ENTITY TABLES (EMPRESA)
+CREATE TABLE IF NOT EXISTS empresa (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  owner_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  base_price NUMERIC DEFAULT 1000,
+  history JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE empresa DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS shareholders (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL,
+  player_id TEXT NOT NULL,
+  shares INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT fk_empresa FOREIGN KEY (company_id) REFERENCES empresa(id) ON DELETE CASCADE
+);
+ALTER TABLE shareholders DISABLE ROW LEVEL SECURITY;
+
+-- 3. SOCIAL & TRADING
 CREATE TABLE IF NOT EXISTS messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
@@ -1970,36 +2231,8 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE messages DISABLE ROW LEVEL SECURITY;
 
-/* 2. CORPORATE ENTITY TABLES (EMPRESA) */
-CREATE TABLE IF NOT EXISTS empresa (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  game_id TEXT NOT NULL,
-  owner_id TEXT NOT NULL,
-  owner_name TEXT NOT NULL,
-  name TEXT NOT NULL,
-  base_price NUMERIC DEFAULT 1000,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS shareholders (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  company_id UUID REFERENCES empresa(id) ON DELETE CASCADE,
-  player_id TEXT NOT NULL,
-  shares INTEGER DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-/* 3. SOCIAL CONNECTION TABLE */
-CREATE TABLE IF NOT EXISTS social_connections (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  sender_id TEXT NOT NULL,
-  receiver_id TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-/* 4. PLAYER STOCKS (PERSISTENT PORTFOLIO) */
 CREATE TABLE IF NOT EXISTS player_stocks (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   player_id TEXT NOT NULL,
@@ -2008,9 +2241,20 @@ CREATE TABLE IF NOT EXISTS player_stocks (
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(player_id, symbol)
 );
+ALTER TABLE player_stocks DISABLE ROW LEVEL SECURITY;
 
-/* 5. ENABLE REALTIME UPDATES */
-ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, social_connections, player_stocks;`}
+CREATE TABLE IF NOT EXISTS social_connections (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_a TEXT NOT NULL,
+  player_b TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE social_connections DISABLE ROW LEVEL SECURITY;
+ 
+-- 4. ENABLE REALTIME
+DROP PUBLICATION IF EXISTS supabase_realtime;
+CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, social_connections, player_stocks, players;`}
                      </div>
                      <div className="mt-4 pt-4 border-t border-white/10">
                         <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
@@ -2062,14 +2306,15 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, s
               initial={{ scale: 0.9, y: 20, opacity: 0 }}
               animate={{ scale: 1, y: 0, opacity: 1 }}
               exit={{ scale: 0.9, y: 20, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col border border-black/10"
+              className="bg-white w-full max-w-md max-h-[90vh] overflow-y-auto rounded-[2.5rem] shadow-2xl relative flex flex-col border border-black/10 custom-scrollbar"
             >
-              <div className="relative h-32 w-full" style={{ backgroundColor: selectedProfile.player_color }}>
+              <div className="relative h-32 w-full shrink-0" style={{ backgroundColor: selectedProfile.player_color }}>
                 <div className="absolute inset-0 bg-gradient-to-b from-black/20 to-transparent" />
                 <button 
                   onClick={() => setSelectedProfile(null)}
-                  className="absolute top-6 right-6 w-10 h-10 bg-white/20 hover:bg-white/40 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all"
+                  className="absolute top-6 right-6 px-4 h-10 bg-black/20 hover:bg-black/40 backdrop-blur-md rounded-full flex items-center gap-2 text-white transition-all group"
                 >
+                  <span className="text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">Close</span>
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -2077,7 +2322,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, s
               <div className="px-8 pb-10 -mt-16 relative flex flex-col items-center">
                 <div className="relative group">
                   <div 
-                    className="w-32 h-32 rounded-[2rem] border-8 border-white shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6 overflow-hidden"
+                    className="w-32 h-32 rounded-[2rem] border-8 shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6 overflow-hidden relative z-10 border-white"
                     style={{ backgroundColor: selectedProfile.player_color }}
                   >
                     {selectedProfile.avatar_url ? (
@@ -2089,7 +2334,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, s
                   {currentPlayer?.id === selectedProfile.id && (
                     <button 
                       onClick={() => fileInputRef.current?.click()}
-                      className="absolute bottom-4 right-0 w-10 h-10 bg-black text-white rounded-2xl flex items-center justify-center shadow-lg border-4 border-white translate-x-1/4 hover:bg-blue-600 transition-all"
+                      className="absolute bottom-4 right-0 w-10 h-10 bg-black text-white rounded-2xl flex items-center justify-center shadow-lg border-4 border-white translate-x-1/4 hover:bg-blue-600 transition-all z-20"
                     >
                       <Camera className="w-4 h-4" />
                     </button>
@@ -2103,13 +2348,23 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, s
                   accept="image/*" 
                 />
                 
-                <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">{selectedProfile.name}</h2>
+                <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">
+                  {selectedProfile.name}
+                </h2>
                 <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-1">Tycoon Operator</span>
 
                 <div className="grid grid-cols-2 gap-4 w-full mt-10">
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
                     <span className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-2">Cash Balance</span>
-                    <span className="text-xl font-mono font-black text-green-600">${selectedProfile.balance.toLocaleString()}</span>
+                    <div className="flex flex-col items-center">
+                       <span className="text-xl font-mono font-black text-green-600">${selectedProfile.balance.toLocaleString()}</span>
+                       {(selectedProfile.debt || 0) > 0 && (
+                         <div className="mt-2 flex items-center gap-1.5 px-2 py-0.5 bg-rose-50 text-rose-600 rounded-full border border-rose-100">
+                            <ShieldAlert className="w-2.5 h-2.5" />
+                            <span className="text-[7px] font-black uppercase">-${(selectedProfile.debt || 0).toLocaleString()} Debt</span>
+                         </div>
+                       )}
+                    </div>
                   </div>
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
                     <span className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-2">Properties</span>
