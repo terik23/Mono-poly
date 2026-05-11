@@ -352,6 +352,22 @@ export default function Game() {
         .select('*'));
       if (shareData) setShareholders(shareData);
 
+      // Fetch Player Stocks
+      if (currentPlayer) {
+        const stockData = await fetchSafely('player_stocks', supabase
+          .from('player_stocks')
+          .select('*')
+          .eq('player_id', currentPlayer.id));
+        
+        if (stockData) {
+          const stockMap: Record<string, number> = {};
+          stockData.forEach((s: any) => {
+            stockMap[s.symbol] = s.amount;
+          });
+          setPlayerStocks(stockMap);
+        }
+      }
+
       // 24 Hour Message Cleanup Logic (Silent Fail)
       if (!missingTablesRef.current.has('messages')) {
         try {
@@ -468,7 +484,7 @@ export default function Game() {
     return () => clearInterval(interval);
   }, []);
 
-  const buyStock = (symbol: string, amount: number) => {
+  const buyStock = async (symbol: string, amount: number) => {
     const stock = stocks.find(s => s.symbol === symbol);
     if (!stock || !currentPlayer) return;
     const cost = stock.price * amount;
@@ -477,24 +493,56 @@ export default function Game() {
       return;
     }
 
+    const newAmount = (playerStocks[symbol] || 0) + amount;
+    
+    // Sync to Supabase
+    const { error } = await supabase
+      .from('player_stocks')
+      .upsert({ 
+        player_id: currentPlayer.id, 
+        symbol: symbol, 
+        amount: newAmount,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'player_id,symbol' });
+
+    if (error && error.code !== '42P01') {
+       console.error("Stock Sync Error:", error);
+    }
+
     setPlayerStocks(prev => ({
       ...prev,
-      [symbol]: (prev[symbol] || 0) + amount
+      [symbol]: newAmount
     }));
 
     handleBalanceUpdate(currentPlayer.id, -cost);
     addToast(`Purchased ${amount} shares of ${stock.name}`, "success");
   };
 
-  const sellStock = (symbol: string, amount: number) => {
+  const sellStock = async (symbol: string, amount: number) => {
     const stock = stocks.find(s => s.symbol === symbol);
     const owned = playerStocks[symbol] || 0;
     if (!stock || !currentPlayer || owned < amount) return;
 
     const profit = stock.price * amount;
+    const newAmount = owned - amount;
+
+    // Sync to Supabase
+    const { error } = await supabase
+      .from('player_stocks')
+      .upsert({ 
+        player_id: currentPlayer.id, 
+        symbol: symbol, 
+        amount: newAmount,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'player_id,symbol' });
+
+    if (error && error.code !== '42P01') {
+       console.error("Stock Sync Error:", error);
+    }
+
     setPlayerStocks(prev => ({
       ...prev,
-      [symbol]: owned - amount
+      [symbol]: newAmount
     }));
 
     handleBalanceUpdate(currentPlayer.id, profit);
@@ -729,6 +777,11 @@ export default function Game() {
           console.log("Realtime connected for game:", gameId);
         }
       });
+
+    // Handle initial stocks load once
+    if (currentPlayer && Object.keys(playerStocks).length === 0) {
+      fetchData(gameId);
+    }
 
     // Periodic cleanup/sync check
     const syncInterval = setInterval(() => fetchData(gameId), 30000);
@@ -1676,6 +1729,24 @@ export default function Game() {
                                </div>
                             </div>
                           </div>
+
+                          {/* Investors List */}
+                          <div className="space-y-1">
+                            <div className="text-[7px] font-black uppercase opacity-30">Shareholders</div>
+                            <div className="flex flex-wrap gap-1">
+                              {shareholders.filter(s => s.company_id === c.id).map((s, idx) => {
+                                const investor = players.find(p => p.id === s.player_id);
+                                return (
+                                  <div key={idx} className="bg-gray-50 border border-black/[0.02] px-2 py-0.5 rounded-md text-[7px] font-black uppercase text-gray-500">
+                                    {investor?.name || 'Unknown'} ({s.shares})
+                                  </div>
+                                );
+                              })}
+                              {shareholders.filter(s => s.company_id === c.id).length === 0 && (
+                                <div className="text-[7px] font-black uppercase opacity-20 italic">Publicly Traded</div>
+                              )}
+                            </div>
+                          </div>
                           
                           <div className="flex gap-2">
                              <button 
@@ -1928,8 +1999,18 @@ CREATE TABLE IF NOT EXISTS social_connections (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-/* 4. ENABLE REALTIME UPDATES */
-ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders, social_connections;`}
+/* 4. PLAYER STOCKS (PERSISTENT PORTFOLIO) */
+CREATE TABLE IF NOT EXISTS player_stocks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  amount INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(player_id, symbol)
+);
+
+/* 5. ENABLE REALTIME UPDATES */
+ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders, social_connections, player_stocks;`}
                      </div>
                      <div className="mt-4 pt-4 border-t border-white/10">
                         <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
