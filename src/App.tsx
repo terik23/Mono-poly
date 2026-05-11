@@ -30,7 +30,8 @@ import {
   Bell,
   Zap,
   Plus,
-  Minus
+  Minus,
+  Camera
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -104,6 +105,7 @@ interface Player {
   last_roll_at: string | null;
   last_daily_at: string;
   player_color: string;
+  avatar_url?: string;
   is_bankrupt?: boolean;
   debt_started_at?: string | null;
 }
@@ -159,7 +161,51 @@ export default function Game() {
   const missingTablesRef = React.useRef<Set<string>>(new Set());
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentPlayer) return;
+
+    if (file.size > 1200000) { // Limit to ~1.2MB for Base64 storage
+      addToast("Image too large (Max 1.2MB).", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result as string;
+      
+      try {
+        const { error } = await supabase
+          .from('players')
+          .update({ avatar_url: base64String })
+          .eq('id', currentPlayer.id);
+
+        if (error) {
+          console.error("Supabase update error:", error);
+          if (error.code === 'PGRST204' || error.code === '42703') {
+            addToast("Database column missing. Please run the SQL fix in System Logs.", "error");
+          } else {
+            throw error;
+          }
+          return;
+        }
+
+        // Update local state
+        const updatedPlayer = { ...currentPlayer, avatar_url: base64String };
+        setCurrentPlayer(updatedPlayer);
+        setSelectedProfile(updatedPlayer);
+        setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? updatedPlayer : p));
+        addToast("Profile photo updated!", "success");
+      } catch (err) {
+        console.error("Avatar update error:", err);
+        addToast("Failed to upload. Try a smaller image.", "error");
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const retryConnection = () => {
     missingTablesRef.current.clear();
     setMissingTables([]);
@@ -1168,8 +1214,12 @@ export default function Game() {
                 <span className="text-[8px] not-italic uppercase tracking-widest opacity-40 font-bold">Player</span>
                 <span className="text-black text-[10px] md:text-xs font-bold font-sans uppercase tracking-tight">{currentPlayer?.name}</span>
              </div>
-             <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
-                {currentPlayer?.name.charAt(0)}
+             <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm overflow-hidden" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
+                {currentPlayer?.avatar_url ? (
+                  <img src={currentPlayer.avatar_url} className="w-full h-full object-cover" alt={currentPlayer.name} referrerPolicy="no-referrer" />
+                ) : (
+                  currentPlayer?.name.charAt(0)
+                )}
              </div>
           </button>
         </div>
@@ -1766,8 +1816,14 @@ export default function Game() {
                     {players.map(p => (
                       <div key={p.id} onClick={() => setSelectedProfile(p)} className="bg-white border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between cursor-pointer hover:border-blue-200 transition-all">
                         <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
-                             <div className="w-full h-full flex items-center justify-center font-mono font-black">{p.name.charAt(0)}</div>
+                          <div className="w-10 h-10 rounded-xl overflow-hidden" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
+                             <div className="w-full h-full flex items-center justify-center font-mono font-black">
+                                {p.avatar_url ? (
+                                  <img src={p.avatar_url} className="w-full h-full object-cover" alt={p.name} referrerPolicy="no-referrer" />
+                                ) : (
+                                  p.name.charAt(0)
+                                )}
+                             </div>
                           </div>
                           <div>
                             <div className="text-[11px] font-black uppercase">{p.name}</div>
@@ -1831,7 +1887,10 @@ export default function Game() {
                        </button>
                      </div>
                      <div id="setup-sql" className="max-h-[300px] overflow-y-auto whitespace-pre custom-scrollbar text-green-400 opacity-90 leading-relaxed font-mono">
-{`/* 1. CORE MESSAGES TABLE */
+{`/* 0. ADD AVATAR SUPPORT TO PLAYERS */
+ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+/* 1. CORE MESSAGES TABLE */
 CREATE TABLE IF NOT EXISTS messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
@@ -1935,12 +1994,33 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders,
               </div>
 
               <div className="px-8 pb-10 -mt-16 relative flex flex-col items-center">
-                <div 
-                  className="w-32 h-32 rounded-[2rem] border-8 border-white shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6"
-                  style={{ backgroundColor: selectedProfile.player_color }}
-                >
-                  {selectedProfile.name.charAt(0)}
+                <div className="relative group">
+                  <div 
+                    className="w-32 h-32 rounded-[2rem] border-8 border-white shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6 overflow-hidden"
+                    style={{ backgroundColor: selectedProfile.player_color }}
+                  >
+                    {selectedProfile.avatar_url ? (
+                      <img src={selectedProfile.avatar_url} className="w-full h-full object-cover" alt={selectedProfile.name} referrerPolicy="no-referrer" />
+                    ) : (
+                      selectedProfile.name.charAt(0)
+                    )}
+                  </div>
+                  {currentPlayer?.id === selectedProfile.id && (
+                    <button 
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute bottom-4 right-0 w-10 h-10 bg-black text-white rounded-2xl flex items-center justify-center shadow-lg border-4 border-white translate-x-1/4 hover:bg-blue-600 transition-all"
+                    >
+                      <Camera className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleAvatarChange} 
+                  className="hidden" 
+                  accept="image/*" 
+                />
                 
                 <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">{selectedProfile.name}</h2>
                 <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-1">Tycoon Operator</span>
