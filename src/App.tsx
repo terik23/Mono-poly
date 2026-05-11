@@ -143,10 +143,10 @@ export default function Game() {
   const [showChat, setShowChat] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState<Player | null>(null);
   const [friends, setFriends] = useState<SocialConnection[]>([]);
-  const [companies, setCompanies] = useState<Company[]>([]);
+  const [empresaList, setEmpresaList] = useState<Company[]>([]);
   const [shareholders, setShareholders] = useState<Shareholder[]>([]);
-  const [isCreatingCompany, setIsCreatingCompany] = useState(false);
-  const [newCompanyName, setNewCompanyName] = useState('');
+  const [isCreatingEmpresa, setIsCreatingEmpresa] = useState(false);
+  const [newEmpresaName, setNewEmpresaName] = useState('');
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
   const [stocks, setStocks] = useState<Stock[]>([
     { symbol: 'AMZN', name: 'Anazona', price: 150, history: [], change: 0 },
@@ -341,11 +341,11 @@ export default function Game() {
       }
 
       // Fetch Companies
-      const compData = await fetchSafely('companies', supabase
-        .from('companies')
+      const compData = await fetchSafely('empresa', supabase
+        .from('empresa')
         .select('*')
         .eq('game_id', gid));
-      if (compData) setCompanies(compData);
+      if (compData) setEmpresaList(compData);
 
       const shareData = await fetchSafely('shareholders', supabase
         .from('shareholders')
@@ -549,27 +549,27 @@ export default function Game() {
     addToast(`Sold ${amount} shares of ${stock.name} for $${profit.toFixed(2)}`, "success");
   };
 
-  const createCompany = async () => {
-    if (!currentPlayer || !newCompanyName) return;
+  const createEmpresa = async () => {
+    if (!currentPlayer || !newEmpresaName) return;
     if (currentPlayer.balance < 10000) {
-      addToast("Insufficient funds. Enterprise requires $10,000", "error");
+      addToast("Insufficient funds. Empresa requires $10,000", "error");
       return;
     }
 
     const { data, error } = await supabase
-      .from('companies')
+      .from('empresa')
       .insert({
         game_id: gameId,
         owner_id: currentPlayer.id,
         owner_name: currentPlayer.name,
-        name: newCompanyName,
+        name: newEmpresaName,
         base_price: 1000,
       })
       .select()
       .single();
 
     if (error) {
-      console.error("Create Company Error:", error);
+      console.error("Create Empresa Error:", error);
       if (error.code === '42P01' || error.code === 'PGRST205') {
         const localId = Math.random().toString();
         const localComp = {
@@ -577,27 +577,27 @@ export default function Game() {
           game_id: gameId,
           owner_id: currentPlayer.id,
           owner_name: currentPlayer.name,
-          name: newCompanyName,
+          name: newEmpresaName,
           base_price: 1000,
           created_at: new Date().toISOString()
         };
-        setCompanies(prev => [...prev, localComp]);
-        addToast("Enterprise started in local memory (Table missing)", "info");
+        setEmpresaList(prev => [...prev, localComp]);
+        addToast("Empresa started in local memory (Table missing)", "info");
       } else {
-        addToast(`Enterprise error: ${error.message}`, "error");
+        addToast(`Empresa error: ${error.message}`, "error");
         return;
       }
     }
 
     await handleBalanceUpdate(currentPlayer.id, -10000);
-    setIsCreatingCompany(false);
-    setNewCompanyName('');
-    addToast(`${newCompanyName} has been founded!`, "success");
+    setIsCreatingEmpresa(false);
+    setNewEmpresaName('');
+    addToast(`${newEmpresaName} has been founded!`, "success");
   };
 
-  const investInCompany = async (companyId: string, shares: number) => {
+  const investInEmpresa = async (companyId: string, shares: number) => {
     if (!currentPlayer) return;
-    const company = companies.find(c => c.id === companyId);
+    const company = empresaList.find(c => c.id === companyId);
     if (!company) return;
 
     const owner = players.find(p => p.id === company.owner_id);
@@ -761,7 +761,7 @@ export default function Game() {
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
-        table: 'companies'
+        table: 'empresa'
       }, () => {
         fetchData(gameId);
       })
@@ -1660,7 +1660,7 @@ export default function Game() {
                    </motion.div>
                 </div>
 
-                {/* START ENTERPRISE BUTTON */}
+                {/* START EMPRESA BUTTON */}
                 {isJoined && currentPlayer && (
                   <div className="bg-blue-600 p-6 rounded-3xl text-white shadow-xl">
                     <div className="flex items-center justify-between mb-4">
@@ -1670,24 +1670,24 @@ export default function Game() {
                       </div>
                       <Briefcase className="w-8 h-8 opacity-20" />
                     </div>
-                    {isCreatingCompany ? (
+                    {isCreatingEmpresa ? (
                       <div className="space-y-4">
                         <input 
                           type="text" 
-                          placeholder="COMPANY NAME (E.G. STARK IND)" 
-                          value={newCompanyName}
-                          onChange={(e) => setNewCompanyName(e.target.value.toUpperCase())}
+                          placeholder="EMPRESA NAME (E.G. STARK IND)" 
+                          value={newEmpresaName}
+                          onChange={(e) => setNewEmpresaName(e.target.value.toUpperCase())}
                           className="w-full bg-white/20 border border-white/30 rounded-xl px-4 py-3 text-sm font-black uppercase placeholder:text-white/40 focus:outline-none focus:bg-white/30"
                         />
                         <div className="flex gap-2">
                           <button 
-                            onClick={createCompany}
+                            onClick={createEmpresa}
                             className="flex-1 py-3 bg-white text-blue-600 text-[10px] font-black uppercase rounded-xl"
                           >
-                            FOUND COMPANY ($10,000)
+                            FOUND EMPRESA ($10,000)
                           </button>
                           <button 
-                            onClick={() => setIsCreatingCompany(false)}
+                            onClick={() => setIsCreatingEmpresa(false)}
                             className="px-4 py-3 bg-black/20 text-white text-[10px] font-black uppercase rounded-xl"
                           >
                             <X className="w-4 h-4" />
@@ -1696,20 +1696,20 @@ export default function Game() {
                       </div>
                     ) : (
                       <button 
-                        onClick={() => setIsCreatingCompany(true)}
+                        onClick={() => setIsCreatingEmpresa(true)}
                         className="w-full py-4 bg-white text-blue-600 font-black uppercase text-[11px] tracking-widest rounded-2xl shadow-lg flex items-center justify-center gap-3 hover:scale-105 transition-transform"
                       >
-                        <Plus className="w-4 h-4" /> Start Enterprise ($10,000)
+                        <Plus className="w-4 h-4" /> Start Empresa ($10,000)
                       </button>
                     )}
                   </div>
                 )}
 
                 {/* PLAYER COMPANIES */}
-                {companies.length > 0 && (
+                {empresaList.length > 0 && (
                   <div className="space-y-4">
                     <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Corporate Index</div>
-                    {companies.map(c => {
+                    {empresaList.map(c => {
                       const owner = players.find(p => p.id === c.owner_id);
                       const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
                       const price = c.base_price * multiplier;
@@ -1750,7 +1750,7 @@ export default function Game() {
                           
                           <div className="flex gap-2">
                              <button 
-                               onClick={() => investInCompany(c.id, 1)}
+                               onClick={() => investInEmpresa(c.id, 1)}
                                disabled={!currentPlayer || currentPlayer.balance < price}
                                className="flex-1 py-3 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl disabled:opacity-30"
                              >
@@ -1930,7 +1930,7 @@ export default function Game() {
                          <div className="text-[8px] font-mono text-red-500 uppercase">{missingTables.length} Tables Missing</div>
                        </div>
                      </div>
-                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">To enable Chat, Friends, and Companies, you must run the SQL script below in your Supabase SQL Editor.</p>
+                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">Some tables are missing (possibly due to recent rename to 'empresa'). Please run the <b>updated</b> SQL script below to fix this.</p>
                      <button 
                        onClick={retryConnection}
                        className="w-full py-3 bg-red-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg hover:bg-black transition-all"
@@ -1971,8 +1971,8 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-/* 2. CORPORATE ENTITY TABLES */
-CREATE TABLE IF NOT EXISTS companies (
+/* 2. CORPORATE ENTITY TABLES (EMPRESA) */
+CREATE TABLE IF NOT EXISTS empresa (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
   owner_id TEXT NOT NULL,
@@ -1984,7 +1984,7 @@ CREATE TABLE IF NOT EXISTS companies (
 
 CREATE TABLE IF NOT EXISTS shareholders (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+  company_id UUID REFERENCES empresa(id) ON DELETE CASCADE,
   player_id TEXT NOT NULL,
   shares INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -2010,7 +2010,7 @@ CREATE TABLE IF NOT EXISTS player_stocks (
 );
 
 /* 5. ENABLE REALTIME UPDATES */
-ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders, social_connections, player_stocks;`}
+ALTER PUBLICATION supabase_realtime ADD TABLE messages, empresa, shareholders, social_connections, player_stocks;`}
                      </div>
                      <div className="mt-4 pt-4 border-t border-white/10">
                         <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
@@ -2136,6 +2136,24 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages, companies, shareholders,
                     })}
                     {properties.filter(p => p.owner_id === selectedProfile.id).length === 0 && (
                       <div className="text-center py-6 text-[10px] uppercase tracking-widest opacity-20 font-black italic">No assets acquired</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-full mt-4 space-y-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Corporate Assets</div>
+                  <div className="space-y-2 w-full">
+                    {empresaList.filter(c => c.owner_id === selectedProfile.id).map(c => (
+                      <div key={c.id} className="flex items-center justify-between p-4 bg-blue-50/50 border border-blue-100 rounded-2xl">
+                         <div className="flex items-center gap-3">
+                            <Building2 className="w-4 h-4 text-blue-600" />
+                            <span className="text-xs font-black uppercase tracking-tight">{c.name}</span>
+                         </div>
+                         <span className="text-[9px] font-mono font-black text-blue-600">${c.base_price.toLocaleString()}</span>
+                      </div>
+                    ))}
+                    {empresaList.filter(c => c.owner_id === selectedProfile.id).length === 0 && (
+                      <div className="text-center py-4 text-[10px] uppercase tracking-widest opacity-10 font-black italic">No corporate holdings</div>
                     )}
                   </div>
                 </div>
