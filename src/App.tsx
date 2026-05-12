@@ -50,6 +50,7 @@ import {
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { formatDistanceToNow, addMinutes, isAfter } from 'date-fns';
+import confetti from 'canvas-confetti';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -159,6 +160,7 @@ export default function Game() {
   const [isCreatingEmpresa, setIsCreatingEmpresa] = useState(false);
   const [newEmpresaName, setNewEmpresaName] = useState('');
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([]);
+  const [isGoldenActive, setIsGoldenActive] = useState(false);
   const [stocks, setStocks] = useState<Stock[]>([
     { symbol: 'AMZN', name: 'Anazona', price: 150, history: [], change: 0 },
     { symbol: 'WDWS', name: 'Windidows', price: 280, history: [], change: 0 },
@@ -431,6 +433,52 @@ export default function Game() {
     const interval = setInterval(() => fetchData(gameId), 10000);
     return () => clearInterval(interval);
   }, [fetchData, gameId]);
+
+  useEffect(() => {
+    const checkGolden = () => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      
+      // Inicia a las 14:45 (2:45 PM) y dura 5 minutos
+      const isActive = hours === 14 && minutes >= 45 && minutes < 50;
+      
+      if (isActive && !isGoldenActive) {
+        addToast("🌟 ¡EVENTO DORADO ACTIVO! Los precios han bajado y obtienes $100 por moverte.", "success");
+        confetti({
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ['#FFD700', '#FDB813', '#B8860B']
+        });
+      }
+      setIsGoldenActive(isActive);
+    };
+
+    checkGolden();
+    const interval = setInterval(checkGolden, 10000);
+    return () => clearInterval(interval);
+  }, [isGoldenActive]);
+
+  // Handle incoming transfer notifications
+  useEffect(() => {
+    if (!currentPlayer) return;
+    
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.text.startsWith('[SYSTEM_TRANSFER]')) {
+      const [, fromId, toId, amount, fromName] = lastMsg.text.split('|');
+      if (toId === currentPlayer.id) {
+        // This is for me!
+        const amt = parseInt(amount);
+        addToast(`🎁 Recibiste $${amt.toLocaleString()} de ${fromName}!`, "success");
+        confetti({
+          particleCount: 100,
+          spread: 50,
+          origin: { y: 0.7 }
+        });
+      }
+    }
+  }, [messages, currentPlayer?.id]);
 
   useEffect(() => {
     // Analytics Sync and Health check
@@ -1209,6 +1257,11 @@ export default function Game() {
     const space = BOARD_SPACES[nextPos];
     setLogs(prev => [`ROLLED ${move}! ARRIVED AT ${space.name.toUpperCase()}`, ...prev]);
 
+    // Golden Event Bonus
+    if (isGoldenActive) {
+      balance += 100;
+    }
+
     // Optimistic Local Update for instant movement
     const updatedPlayer = { 
       ...currentPlayer, 
@@ -1275,7 +1328,11 @@ export default function Game() {
     const space = BOARD_SPACES[spaceId];
     if (!space.price) return;
 
-    const cost = space.price;
+    let cost = space.price;
+    if (isGoldenActive) {
+      cost = Math.floor(cost * 0.5); // 50% discount during golden event
+    }
+    
     const canAfford = currentPlayer.balance >= cost;
     const canLoan = currentPlayer.balance >= cost * 0.5;
 
@@ -1331,8 +1388,14 @@ export default function Game() {
     const ownership = properties.find(p => p.space_id === spaceId);
     if (!ownership || ownership.owner_id !== currentPlayer?.id || ownership.buildings >= 5) return;
     
-    const houseCost = Math.floor((space.price || 100) * 0.5);
-    if (currentPlayer.balance < houseCost) return;
+    let houseCost = Math.floor((space.price || 100) * 0.5);
+    if (isGoldenActive) {
+      houseCost = Math.floor(houseCost * 0.5);
+    }
+    if (currentPlayer.balance < houseCost) {
+      addToast(`No tienes suficiente para construir. Costo: $${houseCost}`, "error");
+      return;
+    }
 
     await supabase
       .from('properties')
@@ -1358,6 +1421,14 @@ export default function Game() {
     const target = players.find(p => p.id === toPlayerId);
     if (target) {
       await supabase.from('players').update({ balance: target.balance + amount }).eq('id', toPlayerId);
+      
+      // Notify recipient via messages table
+      await supabase.from('messages').insert({
+        game_id: gameId,
+        player_id: 'SYSTEM',
+        player_name: 'Tycoon System',
+        text: `[SYSTEM_TRANSFER]|${currentPlayer.id}|${toPlayerId}|${amount}|${currentPlayer.name}`,
+      });
     }
 
     if (!senderErr) {
@@ -1524,7 +1595,18 @@ export default function Game() {
   }
 
   return (
-    <div className="h-screen bg-[#fcfcf9] text-gray-900 font-sans flex flex-col overflow-hidden select-none">
+    <div className={cn(
+      "h-screen text-gray-900 font-sans flex flex-col overflow-hidden select-none transition-all duration-1000",
+      isGoldenActive ? "bg-amber-100 shadow-[inset_0_0_150px_rgba(251,191,36,0.4)]" : "bg-[#fcfcf9]"
+    )}>
+      {isGoldenActive && (
+        <motion.div 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: [0.1, 0.3, 0.1] }}
+          transition={{ duration: 3, repeat: Infinity }}
+          className="fixed inset-0 pointer-events-none z-[50] bg-gradient-to-b from-amber-200/20 to-amber-500/10"
+        />
+      )}
       {/* Floating Money Labels */}
       <AnimatePresence>
         {moneyChanges.map(m => (
