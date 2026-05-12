@@ -34,7 +34,8 @@ import {
   Plus,
   Minus,
   Camera,
-  Heart
+  Heart,
+  Trophy
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -110,6 +111,7 @@ interface Player {
   position: number;
   last_roll_at: string | null;
   last_daily_at: string;
+  last_tax_at?: string | null;
   player_color: string;
   avatar_url?: string;
   is_bankrupt?: boolean;
@@ -142,11 +144,22 @@ export default function Game() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1, 1]);
   const [showSidebar, setShowSidebar] = useState(false);
-  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino'>('board');
-  const [zoom, setZoom] = useState(0.4);
+  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino' | 'missions'>('board');
+  const [zoom, setZoom] = useState(0.3); 
   const [casinoPot, setCasinoPot] = useState(0);
   const [reels, setReels] = useState(['💎', '💎', '💎']);
   const [isSpinning, setIsSpinning] = useState(false);
+  
+  // NEW: Daily Jobs State
+  const [activeJob, setActiveJob] = useState<'memory' | null>(null);
+  const [memoryCards, setMemoryCards] = useState<{ id: number, emoji: string, flipped: boolean, matched: boolean }[]>([]);
+  const [memorySelection, setMemorySelection] = useState<number[]>([]);
+
+  const [missions, setMissions] = useState([
+    { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 5000, goal: 50, current: 0, completed: false },
+    { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 15000, goal: 10000, current: 0, completed: false },
+    { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 20000, goal: 5, current: 0, completed: false },
+  ]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -176,6 +189,8 @@ export default function Game() {
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
+  const [transferAmount, setTransferAmount] = useState<string>('');
+
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !currentPlayer) return;
@@ -445,6 +460,8 @@ export default function Game() {
       
       if (isActive && !isGoldenActive) {
         addToast("🌟 ¡EVENTO DORADO ACTIVO! Los precios han bajado y obtienes $100 por moverte.", "success");
+        // Update mission progress for golden event
+        setMissions(prev => prev.map(m => m.id === 1 ? { ...m, current: Math.min(m.goal, m.current + 10) } : m));
         confetti({
           particleCount: 150,
           spread: 70,
@@ -508,66 +525,60 @@ export default function Game() {
 
   // Stock Market Fluctuation
   useEffect(() => {
-    const interval = setInterval(() => {
-      setStocks(prev => prev.map(s => {
-        // High volatility for "Tycoon" feel, but less frequent (1 min)
-        const isExtreme = Math.random() < 0.1; 
-        const volatility = isExtreme ? 0.35 : 0.05;
-        const direction = Math.random() < 0.55 ? 1 : -1; // Slight upward bias
+    const interval = setInterval(async () => {
+      // Global stock sync
+      const { data: globalStocks, error: fetchErr } = await supabase.from('stocks').select('*');
+      
+      if (globalStocks && globalStocks.length > 0) {
+        setStocks(globalStocks.map(gs => ({
+          symbol: gs.symbol,
+          name: gs.name,
+          price: gs.price,
+          history: gs.history || [],
+          change: gs.change || 0
+        })));
         
-        // Downward changes are less drastic
-        const multiplier = direction === -1 ? 0.6 : 1.0;
+        // Only one player updates the prices (to prevent collisions)
+        // We'll pick the one who is logged in and has the "lowest" ID alphabetically
+        const activePlayers = players.filter(p => new Date().getTime() - new Date(p.last_roll_at || 0).getTime() < 600000);
+        const myRank = activePlayers.sort((a,b) => a.id.localeCompare(b.id))[0];
         
-        // Occasional "Moon" event
-        const isMoon = Math.random() < 0.01;
-        const currentChange = isMoon ? 1.2 : (direction * Math.random() * volatility * multiplier);
-        const newPrice = Math.max(5.0, s.price * (1 + currentChange)); // Minimum price $5
-        
-        if (isMoon) {
-          addToast(`${s.name} IS MOONING! 🚀`, "success");
-        }
-        
-        // Ensure history always has at least 20 points for smooth charts
-        const currentHistory = s.history.length > 0 ? s.history : Array.from({ length: 20 }).map((_, i) => ({
-          time: new Date(Date.now() - (20 - i) * 60000).toLocaleTimeString(),
-          price: s.price
-        }));
+        if (myRank && currentPlayer && myRank.id === currentPlayer.id) {
+           const { data: lastUpdate } = await supabase.from('stocks').select('updated_at').limit(1).single();
+           const lastTime = lastUpdate?.updated_at ? new Date(lastUpdate.updated_at).getTime() : 0;
+           
+           if (Date.now() - lastTime > 55000) { // Approx 1 minute
+              for (const s of globalStocks) {
+                const isExtreme = Math.random() < 0.15; 
+                const isCrash = Math.random() < 0.05;
+                const volatility = isExtreme ? 0.4 : 0.08;
+                const direction = Math.random() < (isCrash ? 0.2 : 0.55) ? 1 : -1;
+                
+                let currentChange = (direction * Math.random() * volatility);
+                if (isCrash) {
+                  currentChange = -(0.3 + Math.random() * 0.4);
+                  addToast(`MARKET CRASH: ${s.name} plummets! 📉`, "error");
+                }
+                
+                const newPrice = Math.max(2.0, s.price * (1 + currentChange));
+                const newHistory = [...(s.history || []).slice(-29), { 
+                  time: new Date().toLocaleTimeString(), 
+                  price: Number(newPrice.toFixed(2)) 
+                }];
 
-        const newHistory = [...currentHistory.slice(-19), { 
-          time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }), 
-          price: Number(newPrice.toFixed(2)) 
-        }];
-
-        return { 
-          ...s, 
-          price: Number(newPrice.toFixed(2)), 
-          history: newHistory,
-          change: Number((currentChange * 100).toFixed(2))
-        };
-      }));
-
-      // Debt Reset System (1 Hour Check)
-      setPlayers(prev => {
-        prev.forEach(async (p) => {
-          if (p.balance < 0) {
-            if (!p.debt_started_at) {
-              await supabase.from('players').update({ debt_started_at: new Date().toISOString() }).eq('id', p.id);
-            } else {
-              const debtHours = (new Date().getTime() - new Date(p.debt_started_at).getTime()) / (1000 * 60 * 60);
-              if (debtHours >= 1) {
-                addToast(`${p.name} reset due to overdue debt`, "error");
-                await supabase.from('players').update({ balance: 1500, position: 0, debt_started_at: null, is_bankrupt: false }).eq('id', p.id);
+                await supabase.from('stocks').update({
+                  price: Number(newPrice.toFixed(2)),
+                  history: newHistory,
+                  change: Number((currentChange * 100).toFixed(2)),
+                  updated_at: new Date().toISOString()
+                }).eq('symbol', s.symbol);
               }
-            }
-          } else if (p.debt_started_at) {
-            await supabase.from('players').update({ debt_started_at: null }).eq('id', p.id);
-          }
-        });
-        return prev;
-      });
-    }, 60000); // Changed to 1 minute as requested
+           }
+        }
+      }
+    }, 10000); // Check every 10s for updates from others
     return () => clearInterval(interval);
-  }, []);
+  }, [currentPlayer?.id, players]);
 
   const buyStock = async (symbol: string, amount: number) => {
     const stock = stocks.find(s => s.symbol === symbol);
@@ -810,6 +821,9 @@ export default function Game() {
         amount: amount
       });
 
+      // Mission progress
+      setMissions(prev => prev.map(m => m.id === 2 ? { ...m, current: Math.min(m.goal, m.current + amount) } : m));
+
       // 3. Luck logic - Higher bets increase winning odds
       const winProbability = Math.min(0.45, 0.08 + (Math.log10(amount / 100) * 0.12));
       const win = Math.random() < winProbability;
@@ -818,6 +832,9 @@ export default function Game() {
       const partialWin = !win && Math.random() < 0.25;
 
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+
+      // Save initial balance to resolve payout correctly (balance BEFORE deduction)
+      const balAtStart = currentPlayer.balance;
 
       // Stop spin after 2 seconds
       setTimeout(async () => {
@@ -849,15 +866,18 @@ export default function Game() {
         setIsSpinning(false);
 
         if (win) {
-          const prize = amount * 5;
+          const prize = amount * 10; // Increasing prize as requested "no da dinero"
+          const newBal = (balAtStart - amount) + prize;
           await supabase.from('players')
-            .update({ balance: (currentPlayer.balance - amount) + prize })
+            .update({ balance: newBal })
             .eq('id', currentPlayer.id);
           addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
+          confetti({ particleCount: 200, spread: 80 });
         } else if (partialWin) {
-          const prize = Math.floor(amount * 1.5);
+          const prize = Math.floor(amount * 2.5); // increased
+          const newBal = (balAtStart - amount) + prize;
           await supabase.from('players')
-            .update({ balance: (currentPlayer.balance - amount) + prize })
+            .update({ balance: newBal })
             .eq('id', currentPlayer.id);
           addToast(`MINI-WIN! Pairs matched! You won $${prize.toLocaleString()}!`, "success");
         } else {
@@ -867,7 +887,7 @@ export default function Game() {
 
           if (refund > 0) {
             await supabase.from('players')
-              .update({ balance: (currentPlayer.balance - amount) + refund })
+              .update({ balance: (balAtStart - amount) + refund })
               .eq('id', currentPlayer.id);
           }
 
@@ -876,7 +896,7 @@ export default function Game() {
               .update({ balance: terik.balance + toBank })
               .eq('id', terik.id);
           }
-          addToast(`La apuesta se fue al banco. El casino te devolvió el 50% ($${refund.toLocaleString()}) como consolación.`, "info");
+          addToast(`Casino devolvió el 50% ($${refund.toLocaleString()})`, "info");
         }
         fetchData(gameId);
       }, 2000);
@@ -965,6 +985,86 @@ export default function Game() {
     
     addToast(`${BOARD_SPACES[spaceId].name} transferida a otro jugador`, "success");
     fetchData(gameId);
+  };
+
+  const startMemoryJob = () => {
+    if (!currentPlayer) return;
+    
+    // Check if done in last 24h
+    const lastJob = (currentPlayer as any).last_job_at ? new Date((currentPlayer as any).last_job_at) : new Date(0);
+    if (Date.now() - lastJob.getTime() < 24 * 60 * 60 * 1000) {
+      addToast("Ya trabajaste hoy. Regresa en 24 horas.", "error");
+      return;
+    }
+
+    const emojis = ['📦', '🔧', '🔋', '🔌', '🛠️', '⚙️', '💎', '💰'];
+    const deck = [...emojis, ...emojis]
+      .sort(() => Math.random() - 0.5)
+      .map((emoji, idx) => ({ id: idx, emoji, flipped: false, matched: false }));
+    
+    setMemoryCards(deck);
+    setMemorySelection([]);
+    setActiveJob('memory');
+  };
+
+  const handleFlip = (id: number) => {
+    if (memorySelection.length === 2 || memoryCards[id].flipped || memoryCards[id].matched) return;
+
+    const newCards = [...memoryCards];
+    newCards[id].flipped = true;
+    setMemoryCards(newCards);
+
+    const newSelection = [...memorySelection, id];
+    setMemorySelection(newSelection);
+
+    if (newSelection.length === 2) {
+      const [idx1, idx2] = newSelection;
+      if (newCards[idx1].emoji === newCards[idx2].emoji) {
+        newCards[idx1].matched = true;
+        newCards[idx2].matched = true;
+        setMemoryCards(newCards);
+        setMemorySelection([]);
+        
+        if (newCards.every(c => c.matched)) {
+          setTimeout(completeJob, 500);
+        }
+      } else {
+        setTimeout(() => {
+          newCards[idx1].flipped = false;
+          newCards[idx2].flipped = false;
+          setMemoryCards(newCards);
+          setMemorySelection([]);
+        }, 1000);
+      }
+    }
+  };
+
+  const completeJob = async () => {
+    if (!currentPlayer) return;
+    const reward = 1000;
+    
+    // Mission progress
+    setMissions(prev => prev.map(m => m.id === 1 ? { ...m, current: Math.min(m.goal, m.current + 10) } : m));
+    
+    await handleBalanceUpdate(currentPlayer.id, reward);
+    await supabase.from('players').update({ last_job_at: new Date().toISOString() }).eq('id', currentPlayer.id);
+    
+    addToast(`¡Trabajo Terminado! Ganaste $${reward.toLocaleString()}`, "success");
+    confetti({ particleCount: 150, spread: 70 });
+    setActiveJob(null);
+    fetchData(gameId);
+  };
+
+  const claimMission = async (missionId: number) => {
+    const mission = missions.find(m => m.id === missionId);
+    if (!mission || mission.completed || !currentPlayer || mission.current < mission.goal) return;
+
+    const reward = mission.reward;
+    await handleBalanceUpdate(currentPlayer.id, reward);
+    
+    setMissions(prev => prev.map(m => m.id === missionId ? { ...m, completed: true } : m));
+    addToast(`¡Misión Completada! Ganaste $${reward.toLocaleString()}`, "success");
+    confetti({ particleCount: 150, spread: 70, colors: ['#4ade80', '#22c55e'] });
   };
 
   // Sync logs to Supabase Storage "Server" bucket
@@ -1192,7 +1292,8 @@ export default function Game() {
         balance: 1500,
         position: 0,
         player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
-        last_daily_at: new Date().toISOString()
+        last_daily_at: new Date().toISOString(),
+        last_tax_at: new Date().toISOString()
       };
 
       const { data, error: insertError } = await supabase
@@ -1239,6 +1340,22 @@ export default function Game() {
     if (new Date().getTime() - lastDaily.getTime() > 24 * 60 * 60 * 1000) {
       balance += 100;
       addToast("Daily dividend $100 collected", "success");
+      currentPlayer.last_daily_at = new Date().toISOString();
+    }
+
+    // Daily Tax 20% - EXEMPT IF IN CASINO
+    const lastTax = currentPlayer.last_tax_at ? new Date(currentPlayer.last_tax_at) : lastDaily;
+    if (view !== 'casino' && new Date().getTime() - lastTax.getTime() > 24 * 60 * 60 * 1000) {
+      const taxAmount = Math.floor(balance * 0.20);
+      balance -= taxAmount;
+      addToast(`Daily Tax (20%) Applied: -$${taxAmount.toLocaleString()}`, "error");
+      
+      const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+      if (terik) {
+        await supabase.from('players').update({ balance: terik.balance + taxAmount }).eq('id', terik.id);
+      }
+      
+      currentPlayer.last_tax_at = new Date().toISOString();
     }
 
     if (nextPos < currentPlayer.position) {
@@ -1257,10 +1374,27 @@ export default function Game() {
     const space = BOARD_SPACES[nextPos];
     setLogs(prev => [`ROLLED ${move}! ARRIVED AT ${space.name.toUpperCase()}`, ...prev]);
 
+    // Tax handling - Redirected to TERIK
+    if (space.type === 'tax') {
+       const taxAmount = space.price || 100;
+       balance -= taxAmount;
+       addToast(`Tax Paid: $${taxAmount.toLocaleString()}`, "error");
+       
+       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+       if (terik) {
+         await supabase.from('players').update({ balance: terik.balance + taxAmount }).eq('id', terik.id);
+         setLogs(prev => [`TAX OF $${taxAmount} PAID TO TERIK`, ...prev]);
+       }
+    }
+
     // Golden Event Bonus
     if (isGoldenActive) {
       balance += 100;
+      addToast("¡Bono dorado +$100!", "success");
     }
+
+    // Update mission progress for walking
+    setMissions(prev => prev.map(m => m.id === 1 ? { ...m, current: Math.min(m.goal, m.current + move) } : m));
 
     // Optimistic Local Update for instant movement
     const updatedPlayer = { 
@@ -1358,6 +1492,9 @@ export default function Game() {
       
       setLogs(prev => [`Bought ${space.name} ${loanDebt > 0 ? '(Financed)' : ''} for $${downPayment}`, ...prev]);
       
+      // Update mission progress for buying properties
+      setMissions(prev => prev.map(m => m.id === 3 ? { ...m, current: Math.min(m.goal, m.current + 1) } : m));
+
       // Update local state for immediate feedback
       setProperties(prev => [...prev, {
         id: Math.random().toString(), 
@@ -1710,16 +1847,16 @@ export default function Game() {
               <div 
                 className="relative transition-all duration-1000 ease-in-out shrink-0 m-auto" 
                 style={{ 
-                  width: `${2000 * zoom}px`,
-                  height: `${2000 * zoom}px`
+                  width: `${6000 * zoom}px`,
+                  height: `${6000 * zoom}px`
                 }}
               >
                 <div 
                   className="absolute top-0 left-0 transition-transform duration-1000 ease-in-out" 
                   style={{ 
                     transform: `scale(${zoom})`,
-                    width: '2000px',
-                    height: '2000px',
+                    width: '6000px',
+                    height: '6000px',
                     transformOrigin: '0 0'
                   }}
                 >
@@ -1791,12 +1928,12 @@ export default function Game() {
                          {space.id === 150 && <Landmark className="w-48 h-48" />}
                       </div>
                     )}
-                    <div className="z-10 p-0.5 md:p-1 flex flex-col items-center justify-center h-full w-full text-center">
-                      <span className="text-[8px] md:text-[10px] font-bold uppercase tracking-tight text-gray-900 leading-tight">
+                    <div className="z-10 p-2 md:p-6 flex flex-col items-center justify-center h-full w-full text-center">
+                      <span className="text-[12px] md:text-[24px] font-black uppercase tracking-tight text-gray-900 leading-tight">
                         {space.name}
                       </span>
                       {space.price && (
-                        <span className="text-[7px] md:text-[9px] font-mono mt-auto font-bold text-black/50">
+                        <span className="text-[11px] md:text-[18px] font-mono mt-auto font-black text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full shadow-sm">
                           ${space.price}
                         </span>
                       )}
@@ -2301,7 +2438,7 @@ export default function Game() {
               </div>
             )}
 
-             {view === 'transfer' && (
+            {view === 'transfer' && (
                 <div className="flex-1 flex flex-col gap-8">
                    <div className="flex justify-between items-center px-1">
                      <div>
@@ -2322,17 +2459,39 @@ export default function Game() {
                                </div>
                                <span className="text-[11px] font-black uppercase tracking-tight text-gray-900">{p.name}</span>
                             </div>
-                            <div className="flex gap-2">
-                               {[100, 500, 1000].map(amt => (
+                             <div className="flex flex-wrap gap-2">
+                               {[100, 500, 1000, 100000, 500000, 1000000].map(amt => (
                                   <button 
                                     key={amt}
                                     onClick={() => transferMoney(p.id, amt)}
                                     disabled={!currentPlayer || currentPlayer.balance < amt}
                                     className="px-4 py-2 bg-white border border-black/5 text-[9px] font-black rounded-xl hover:bg-black hover:text-white transition-all disabled:opacity-20 shadow-sm"
                                   >
-                                    +${amt}
+                                    +${amt >= 1000000 ? (amt/1000000)+'M' : amt >= 1000 ? (amt/1000)+'K' : amt}
                                   </button>
                                ))}
+                               <div className="flex items-center gap-1 w-full mt-2">
+                                  <input 
+                                    type="number" 
+                                    placeholder="CUSTOM AMOUNT"
+                                    value={transferAmount}
+                                    onChange={(e) => setTransferAmount(e.target.value)}
+                                    className="flex-1 bg-white border border-black/5 px-4 py-2 text-[10px] font-mono rounded-xl focus:outline-none focus:ring-2 ring-blue-500/20"
+                                  />
+                                  <button 
+                                    onClick={() => {
+                                      const amt = parseInt(transferAmount);
+                                      if (amt > 0) {
+                                        transferMoney(p.id, amt);
+                                        setTransferAmount('');
+                                      }
+                                    }}
+                                    disabled={!currentPlayer || !transferAmount || currentPlayer.balance < parseInt(transferAmount)}
+                                    className="bg-black text-white px-4 py-2 text-[9px] font-black uppercase rounded-xl disabled:opacity-30"
+                                  >
+                                    Send
+                                  </button>
+                               </div>
                             </div>
                          </div>
                        ))}
@@ -2374,6 +2533,118 @@ export default function Game() {
                    </div>
                 </div>
              )}
+
+              {view === 'missions' && (
+                <div className="flex-1 flex flex-col gap-8">
+                   <div className="flex justify-between items-center px-1">
+                     <div>
+                       <h2 className="text-xl font-serif italic text-gray-900">Misiones & Trabajos</h2>
+                       <p className="text-[8px] font-black uppercase tracking-[0.2em] opacity-30 italic">Completa tareas diarias para ganar $1,000</p>
+                     </div>
+                     <Trophy className="text-amber-500 w-5 h-5" />
+                   </div>
+
+                   {/* Daily Jobs Section */}
+                   <div className="space-y-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest opacity-20 px-1 italic">Trabajo del Día</div>
+                      {!activeJob ? (
+                        <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-8 rounded-[2rem] text-white shadow-xl relative overflow-hidden group">
+                           <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-10" />
+                           <div className="relative z-10">
+                              <div className="flex justify-between items-start mb-6">
+                                <div className="bg-white/20 p-3 rounded-2xl backdrop-blur-md">
+                                   <Trophy className="w-6 h-6" />
+                                </div>
+                                <span className="text-[10px] font-black tracking-widest uppercase bg-green-400 text-black px-4 py-1.5 rounded-full shadow-lg">+$1,000</span>
+                              </div>
+                              <h3 className="text-2xl font-serif italic mb-2">Mantenimiento de Red</h3>
+                              <p className="text-xs opacity-80 mb-8 leading-relaxed">Conecta los nodos de memoria para estabilizar el sistema Tycoon. (Tipo Memorama)</p>
+                              <button 
+                                onClick={startMemoryJob}
+                                className="w-full py-4 bg-white text-blue-600 text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all"
+                              >
+                                Empezar Turno
+                              </button>
+                           </div>
+                        </div>
+                      ) : (
+                        <div className="bg-black p-6 rounded-[2.5rem] shadow-2xl border border-white/5 space-y-6">
+                            <div className="flex justify-between items-center px-2">
+                               <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">Job: Memorama</span>
+                               <button onClick={() => setActiveJob(null)} className="text-white/40 hover:text-white">✕</button>
+                            </div>
+                            <div className="grid grid-cols-4 gap-3">
+                               {memoryCards.map((card) => (
+                                 <motion.div 
+                                   key={card.id}
+                                   whileHover={{ scale: 1.05 }}
+                                   whileTap={{ scale: 0.95 }}
+                                   onClick={() => handleFlip(card.id)}
+                                   className={cn(
+                                     "aspect-square rounded-2xl flex items-center justify-center text-2xl cursor-pointer transition-all duration-300 relative overflow-hidden",
+                                     card.flipped || card.matched ? "bg-white text-black" : "bg-white/5 text-transparent border border-white/10"
+                                   )}
+                                 >
+                                   {(card.flipped || card.matched) ? card.emoji : '?'}
+                                   {!card.flipped && !card.matched && (
+                                     <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
+                                   )}
+                                 </motion.div>
+                               ))}
+                            </div>
+                        </div>
+                      )}
+                   </div>
+
+                   <div className="space-y-4 pt-8 border-t border-black/5">
+                      <div className="text-[10px] font-black uppercase tracking-widest opacity-20 px-1 italic">Logros Globales</div>
+                      {missions.map(m => (
+                        <div key={m.id} className={cn(
+                          "p-6 rounded-[2rem] border transition-all duration-500",
+                          m.completed ? "bg-green-50 border-green-100 opacity-60" : "bg-white border-black/[0.03] shadow-sm hover:shadow-md"
+                        )}>
+                           <div className="flex justify-between items-start mb-4">
+                              <div>
+                                 <h3 className="text-sm font-black uppercase tracking-tight text-gray-900">{m.title}</h3>
+                                 <p className="text-[10px] text-gray-500 mt-1">{m.description}</p>
+                              </div>
+                              <span className="text-[10px] font-mono font-black text-green-600 bg-green-50 px-3 py-1 rounded-full">
+                                 +${m.reward.toLocaleString()}
+                              </span>
+                           </div>
+
+                           <div className="space-y-2">
+                              <div className="flex justify-between text-[8px] font-black uppercase tracking-widest opacity-40">
+                                 <span>Progreso</span>
+                                 <span>{m.current} / {m.goal}</span>
+                              </div>
+                              <div className="h-2 bg-gray-100 rounded-full overflow-hidden border border-black/[0.02]">
+                                 <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${(m.current / m.goal) * 100}%` }}
+                                    className={cn("h-full", m.current >= m.goal ? "bg-green-500" : "bg-blue-500")}
+                                 />
+                              </div>
+                           </div>
+
+                           {!m.completed && m.current >= m.goal && (
+                             <button 
+                                onClick={() => claimMission(m.id)}
+                                className="w-full mt-6 py-3 bg-black text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all"
+                             >
+                                Reclamar Recompensa
+                             </button>
+                           )}
+                           {m.completed && (
+                             <div className="w-full mt-6 py-3 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-widest rounded-2xl text-center">
+                                Completada ✅
+                             </div>
+                           )}
+                        </div>
+                      ))}
+                   </div>
+                </div>
+              )}
 
             {view === 'stats' && (
                <div className="flex-1 flex flex-col gap-8">
@@ -2507,10 +2778,30 @@ export default function Game() {
 -- 0. CORE EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+CREATE TABLE IF NOT EXISTS stocks (
+  symbol TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price NUMERIC NOT NULL,
+  history JSONB DEFAULT '[]',
+  change NUMERIC DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Seed initial stocks if empty
+INSERT INTO stocks (symbol, name, price)
+VALUES 
+  ('AMZN', 'Anazona', 150),
+  ('WDWS', 'Windidows', 280),
+  ('META', 'Metas', 310),
+  ('EBAY', 'Ebais', 45),
+  ('PEAR', 'Pear', 190)
+ON CONFLICT (symbol) DO NOTHING;
+
 -- 1. BASE TABLE UPDATES
 ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS negative_since TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS last_tax_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS last_job_at TIMESTAMPTZ DEFAULT NULL;
 
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_mortgaged BOOLEAN DEFAULT FALSE;
 
@@ -3092,6 +3383,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
               { id: 'stocks', icon: TrendingUp, label: 'Stocks' },
               { id: 'casino', icon: Coins, label: 'Casino' },
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
+              { id: 'missions', icon: Trophy, label: 'Quests' },
               { id: 'stats', icon: Users, label: 'Players' },
               { id: 'chat_history', icon: Send, label: 'Chat Log' }
             ].map(v => (
