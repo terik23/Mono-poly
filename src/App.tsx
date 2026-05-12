@@ -824,12 +824,12 @@ export default function Game() {
       // Mission progress
       setMissions(prev => prev.map(m => m.id === 2 ? { ...m, current: Math.min(m.goal, m.current + amount) } : m));
 
-      // 3. Luck logic - Higher bets increase winning odds
-      const winProbability = Math.min(0.45, 0.08 + (Math.log10(amount / 100) * 0.12));
+      // 3. Luck logic - Normal Casino Odds (Harder)
+      const winProbability = Math.min(0.20, 0.05 + (Math.log10(amount / 100) * 0.05));
       const win = Math.random() < winProbability;
       
-      // Secondary win logic (2 of a kind)
-      const partialWin = !win && Math.random() < 0.25;
+      // Secondary win logic (2 of a kind) - 15% chance
+      const partialWin = !win && Math.random() < 0.15;
 
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
 
@@ -866,37 +866,28 @@ export default function Game() {
         setIsSpinning(false);
 
         if (win) {
-          const prize = amount * 10; // Increasing prize as requested "no da dinero"
+          const prize = amount * 5; // Reduced from 10x
           const newBal = (balAtStart - amount) + prize;
           await supabase.from('players')
             .update({ balance: newBal })
             .eq('id', currentPlayer.id);
-          addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
+          addToast(`JACKPOT! Ganaste $${prize.toLocaleString()}!`, "success");
           confetti({ particleCount: 200, spread: 80 });
         } else if (partialWin) {
-          const prize = Math.floor(amount * 2.5); // increased
+          const prize = Math.floor(amount * 2); // Reduced from 2.5x
           const newBal = (balAtStart - amount) + prize;
           await supabase.from('players')
             .update({ balance: newBal })
             .eq('id', currentPlayer.id);
-          addToast(`MINI-WIN! Pairs matched! You won $${prize.toLocaleString()}!`, "success");
+          addToast(`MINI-GANE! Pareja igual! Ganaste $${prize.toLocaleString()}!`, "success");
         } else {
-          // 50% consolation prize
-          const refund = Math.floor(amount * 0.5);
-          const toBank = amount - refund;
-
-          if (refund > 0) {
-            await supabase.from('players')
-              .update({ balance: (balAtStart - amount) + refund })
-              .eq('id', currentPlayer.id);
-          }
-
+          // No refund - House takes it all (House = Terik)
           if (terik) {
             await supabase.from('players')
-              .update({ balance: terik.balance + toBank })
+              .update({ balance: terik.balance + amount })
               .eq('id', terik.id);
           }
-          addToast(`Casino devolvió el 50% ($${refund.toLocaleString()})`, "info");
+          addToast(`Perdiste la apuesta. El casino se queda con $${amount.toLocaleString()}.`, "error");
         }
         fetchData(gameId);
       }, 2000);
