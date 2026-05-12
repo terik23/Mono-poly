@@ -1330,19 +1330,23 @@ export default function Game() {
       currentPlayer.last_daily_at = new Date().toISOString();
     }
 
-    // Daily Tax 20% - EXEMPT IF IN CASINO
-    const lastTax = currentPlayer.last_tax_at ? new Date(currentPlayer.last_tax_at) : lastDaily;
-    if (view !== 'casino' && new Date().getTime() - lastTax.getTime() > 24 * 60 * 60 * 1000) {
+    // Daily Tax 20% at 2:44 PM - EXEMPT IF IN CASINO
+    const now = new Date();
+    const isAfterTaxTime = now.getHours() > 14 || (now.getHours() === 14 && now.getMinutes() >= 44);
+    const lastTaxDate = currentPlayer.last_tax_at ? new Date(currentPlayer.last_tax_at) : new Date(0);
+    const taxDeadlineToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 44, 0);
+
+    if (view !== 'casino' && isAfterTaxTime && lastTaxDate < taxDeadlineToday) {
       const taxAmount = Math.floor(balance * 0.20);
       balance -= taxAmount;
       addToast(`Daily Tax (20%) Applied: -$${taxAmount.toLocaleString()}`, "error");
       
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
       if (terik) {
-        await supabase.from('players').update({ balance: terik.balance + taxAmount }).eq('id', terik.id);
+        await supabase.from('players').update({ balance: (terik.balance || 0) + taxAmount }).eq('id', terik.id);
       }
       
-      currentPlayer.last_tax_at = new Date().toISOString();
+      currentPlayer.last_tax_at = now.toISOString();
     }
 
     if (nextPos < currentPlayer.position) {
