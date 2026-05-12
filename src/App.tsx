@@ -139,8 +139,9 @@ export default function Game() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1, 1]);
   const [showSidebar, setShowSidebar] = useState(false);
-  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history'>('board');
+  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino'>('board');
   const [zoom, setZoom] = useState(0.4);
+  const [casinoPot, setCasinoPot] = useState(0);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -384,6 +385,12 @@ export default function Game() {
         }
       }
 
+      const bankData = await fetchSafely('bank', supabase.from('bank').select('amount'));
+      if (bankData) {
+        const total = bankData.reduce((acc: number, curr: any) => acc + curr.amount, 0);
+        setCasinoPot(total);
+      }
+
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
       setErrorMsg(`Synchronization Lag: Reconnecting...`); // Softer error message
@@ -434,14 +441,17 @@ export default function Game() {
   useEffect(() => {
     const interval = setInterval(() => {
       setStocks(prev => prev.map(s => {
-        // Higher volatility for "Tycoon" feel
-        const isExtreme = Math.random() < 0.15; 
-        const volatility = isExtreme ? 0.45 : 0.08;
-        const direction = Math.random() < 0.52 ? 1 : -1; // Slight upward bias for growth
+        // High volatility for "Tycoon" feel, but less frequent (1 min)
+        const isExtreme = Math.random() < 0.1; 
+        const volatility = isExtreme ? 0.35 : 0.05;
+        const direction = Math.random() < 0.55 ? 1 : -1; // Slight upward bias
+        
+        // Downward changes are less drastic
+        const multiplier = direction === -1 ? 0.6 : 1.0;
         
         // Occasional "Moon" event
-        const isMoon = Math.random() < 0.02;
-        const currentChange = isMoon ? 1.5 : (direction * Math.random() * volatility);
+        const isMoon = Math.random() < 0.01;
+        const currentChange = isMoon ? 1.2 : (direction * Math.random() * volatility * multiplier);
         const newPrice = Math.max(5.0, s.price * (1 + currentChange)); // Minimum price $5
         
         if (isMoon) {
@@ -450,7 +460,7 @@ export default function Game() {
         
         // Ensure history always has at least 20 points for smooth charts
         const currentHistory = s.history.length > 0 ? s.history : Array.from({ length: 20 }).map((_, i) => ({
-          time: new Date(Date.now() - (20 - i) * 30000).toLocaleTimeString(),
+          time: new Date(Date.now() - (20 - i) * 60000).toLocaleTimeString(),
           price: s.price
         }));
 
@@ -486,7 +496,7 @@ export default function Game() {
         });
         return prev;
       });
-    }, 10000); // 10 seconds per update for more activity
+    }, 60000); // Changed to 1 minute as requested
     return () => clearInterval(interval);
   }, []);
 
@@ -683,6 +693,56 @@ export default function Game() {
      }
 
      await supabase.from('players').update({ debt: newDebt }).eq('id', playerId);
+  };
+
+  const handleCasinoBet = async (amount: number) => {
+    if (!currentPlayer || currentPlayer.balance < amount) {
+      addToast("Insufficient funds for this bet!", "error");
+      return;
+    }
+
+    try {
+      // 1. Deduct from player
+      const { error: deductError } = await supabase
+        .from('players')
+        .update({ balance: currentPlayer.balance - amount })
+        .eq('id', currentPlayer.id);
+      
+      if (deductError) throw deductError;
+
+      // 2. Record in bank
+      await supabase.from('bank').insert({
+        player_id: currentPlayer.id,
+        player_name: currentPlayer.name,
+        amount: amount
+      });
+
+      // 3. Find Terik and transfer
+      const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+      if (terik) {
+        await supabase.from('players')
+          .update({ balance: terik.balance + amount })
+          .eq('id', terik.id);
+      }
+
+      // 4. Luck logic - Higher bets increase winning odds (scaling from 5% to 35%)
+      const winProbability = Math.min(0.4, 0.05 + (Math.log10(amount / 100) * 0.1));
+      const win = Math.random() < winProbability;
+      if (win) {
+        const prize = amount * 5;
+        await supabase.from('players')
+          .update({ balance: currentPlayer.balance - amount + prize })
+          .eq('id', currentPlayer.id);
+        addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
+      } else {
+        addToast(`Gamble lost. $${amount} donated to the Great Bank of Terik.`, "info");
+      }
+
+      fetchData(gameId);
+    } catch (err) {
+      console.error("Casino error:", err);
+      addToast("Casino machine jammed. Table 'bank' might be missing.", "error");
+    }
   };
 
   const handleBalanceUpdate = async (playerId: string, delta: number) => {
@@ -898,14 +958,14 @@ export default function Game() {
         .from('players')
         .select('*')
         .eq('game_id', gameId)
-        .eq('name', playerName)
+        .ilike('name', playerName)
         .maybeSingle();
 
       if (checkError) throw checkError;
 
       if (authMode === 'signup') {
         if (existingPlayer) {
-          addToast("Operating Name already registered", "error");
+          addToast("Ese usuario ya esta", "error");
           return;
         }
       } else {
@@ -2162,7 +2222,7 @@ export default function Game() {
                          <div className="text-[8px] font-mono text-red-500 uppercase">{missingTables.length} Tables Missing</div>
                        </div>
                      </div>
-                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">Some tables are missing (possibly due to recent rename to 'empresa'). Please run the <b>updated</b> SQL script below to fix this.</p>
+                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">Some tables are missing (possibly due to recent updates). Please run the <b>updated</b> SQL script below to fix this.</p>
                      <button 
                        onClick={retryConnection}
                        className="w-full py-3 bg-red-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg hover:bg-black transition-all"
@@ -2222,7 +2282,18 @@ CREATE TABLE IF NOT EXISTS shareholders (
 );
 ALTER TABLE shareholders DISABLE ROW LEVEL SECURITY;
 
--- 3. SOCIAL & TRADING
+-- 3. CASINO & BANK
+CREATE TABLE IF NOT EXISTS bank (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id TEXT NOT NULL,
+  player_name TEXT NOT NULL,
+  amount NUMERIC NOT NULL,
+  type TEXT DEFAULT 'casino_bet',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE bank DISABLE ROW LEVEL SECURITY;
+
+-- 4. SOCIAL & TRADING
 CREATE TABLE IF NOT EXISTS messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   game_id TEXT NOT NULL,
@@ -2252,9 +2323,9 @@ CREATE TABLE IF NOT EXISTS social_connections (
 );
 ALTER TABLE social_connections DISABLE ROW LEVEL SECURITY;
  
--- 4. ENABLE REALTIME
+-- 5. ENABLE REALTIME
 DROP PUBLICATION IF EXISTS supabase_realtime;
-CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, social_connections, player_stocks, players;`}
+CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, social_connections, player_stocks, players, bank;`}
                      </div>
                      <div className="mt-4 pt-4 border-t border-white/10">
                         <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
@@ -2286,6 +2357,58 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                    </div>
                  </div>
                </div>
+            )}
+
+            {view === 'casino' && (
+              <div className="flex-1 flex flex-col gap-6">
+                <div className="flex justify-between items-center bg-gradient-to-br from-amber-400 to-amber-600 text-white p-8 rounded-[2.5rem] shadow-2xl relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl" />
+                  <div className="relative z-10">
+                    <h2 className="text-3xl font-serif italic mb-1">The Grand Casino</h2>
+                    <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">High Stakes Tycoon Lounge</p>
+                  </div>
+                  <Coins className="w-12 h-12 opacity-30 relative z-10" />
+                </div>
+
+                <div className="bg-black text-white p-8 rounded-[2.5rem] shadow-2xl space-y-6 relative border-t-4 border-amber-500">
+                  <div className="flex flex-col items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-500">Pot Total (Bank)</span>
+                    <span className="text-5xl font-mono font-black tracking-tighter text-white">
+                      ${casinoPot.toLocaleString()}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {[100, 500, 1000, 10000, 100000].map(amt => (
+                      <button 
+                        key={amt}
+                        onClick={() => handleCasinoBet(amt)}
+                        disabled={!currentPlayer || currentPlayer.balance < amt}
+                        className="py-4 bg-white/5 border border-white/10 rounded-2xl text-sm font-black hover:bg-amber-500 hover:border-amber-600 transition-all disabled:opacity-20 active:scale-95"
+                      >
+                        BET ${amt.toLocaleString()}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="pt-4 border-t border-white/10 text-center">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">More money = Better Odds</p>
+                    <p className="text-[8px] font-medium opacity-40 mt-1 uppercase italic">Lost bets fuel the Bank of Terik</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="text-[10px] uppercase font-black tracking-widest opacity-20 px-2 italic">Recent Gamblers</div>
+                  <div className="space-y-2">
+                    {messages.filter(m => m.text.includes('bet') || m.text.includes('WON')).slice(-5).map((m, i) => (
+                      <div key={i} className="p-4 bg-gray-50 border border-black/[0.02] rounded-2xl flex justify-between items-center">
+                        <span className="text-[10px] font-black uppercase">{m.player_name}</span>
+                        <span className="text-[10px] font-mono opacity-40">{m.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </aside>
@@ -2656,6 +2779,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
             {[
               { id: 'board', icon: Home, label: 'Map' },
               { id: 'stocks', icon: TrendingUp, label: 'Stocks' },
+              { id: 'casino', icon: Coins, label: 'Casino' },
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
               { id: 'stats', icon: Users, label: 'Players' },
               { id: 'chat_history', icon: Send, label: 'Chat Log' }
