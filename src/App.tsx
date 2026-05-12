@@ -113,6 +113,7 @@ interface Player {
   avatar_url?: string;
   is_bankrupt?: boolean;
   debt_started_at?: string | null;
+  negative_since?: string | null;
 }
 
 interface PropertyOwnership {
@@ -120,6 +121,7 @@ interface PropertyOwnership {
   game_id: string;
   owner_id: string | null;
   buildings: number;
+  is_mortgaged?: boolean;
 }
 
 const PLAYER_COLORS = [
@@ -142,6 +144,8 @@ export default function Game() {
   const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino'>('board');
   const [zoom, setZoom] = useState(0.4);
   const [casinoPot, setCasinoPot] = useState(0);
+  const [reels, setReels] = useState(['💎', '💎', '💎']);
+  const [isSpinning, setIsSpinning] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -306,7 +310,24 @@ export default function Game() {
       };
 
       const pData = await fetchSafely('players', supabase.from('players').select('*').eq('game_id', gid));
-      if (pData) setPlayers(pData);
+      if (pData) {
+        setPlayers(pData);
+        
+        // AUTO-ELIMINATION: Check for negative balance > 24h
+        pData.forEach(async (p: any) => {
+          if (p.negative_since) {
+             const negStart = new Date(p.negative_since).getTime();
+             const now = Date.now();
+             const diffHours = (now - negStart) / (1000 * 60 * 60);
+             if (diffHours >= 24) {
+                // Delete player and properties
+                await supabase.from('players').delete().eq('id', p.id);
+                await supabase.from('properties').delete().eq('owner_id', p.id);
+                addToast(`Account ELIMINATED: ${p.name} had negative balance for >24h`, "error");
+             }
+          }
+        });
+      }
 
       const propData = await fetchSafely('properties', supabase.from('properties').select('*').eq('game_id', gid));
       if (propData) setProperties(propData);
@@ -578,6 +599,14 @@ export default function Game() {
 
   const createEmpresa = async () => {
     if (!currentPlayer || !newEmpresaName) return;
+
+    // Limit to one empresa per person
+    const hasEmpresa = empresaList.some(e => e.owner_id === currentPlayer.id);
+    if (hasEmpresa) {
+      addToast("Solo puedes tener una empresa a la vez.", "error");
+      return;
+    }
+
     if (currentPlayer.balance < 10000) {
       addToast("Insufficient funds. Empresa requires $10,000", "error");
       return;
@@ -696,10 +725,22 @@ export default function Game() {
   };
 
   const handleCasinoBet = async (amount: number) => {
-    if (!currentPlayer || currentPlayer.balance < amount) {
-      addToast("Insufficient funds for this bet!", "error");
+    if (!currentPlayer || currentPlayer.balance < amount || isSpinning) {
+      if (!isSpinning) addToast("Insufficient funds for this bet!", "error");
       return;
     }
+
+    const symbols = ['🍒', '🍋', '💎', '🔔', '7️⃣', '⭐', '🍊', '🍇', '👑', '🃏'];
+    setIsSpinning(true);
+
+    // Start visual spinning
+    const spinInterval = setInterval(() => {
+      setReels([
+        symbols[Math.floor(Math.random() * symbols.length)],
+        symbols[Math.floor(Math.random() * symbols.length)],
+        symbols[Math.floor(Math.random() * symbols.length)]
+      ]);
+    }, 80);
 
     try {
       // 1. Deduct from player
@@ -708,7 +749,11 @@ export default function Game() {
         .update({ balance: currentPlayer.balance - amount })
         .eq('id', currentPlayer.id);
       
-      if (deductError) throw deductError;
+      if (deductError) {
+        clearInterval(spinInterval);
+        setIsSpinning(false);
+        throw deductError;
+      }
 
       // 2. Record in bank
       await supabase.from('bank').insert({
@@ -717,52 +762,82 @@ export default function Game() {
         amount: amount
       });
 
-      // 3. Luck logic - Higher bets increase winning odds (scaling from 5% to 35%)
-      const winProbability = Math.min(0.4, 0.05 + (Math.log10(amount / 100) * 0.1));
+      // 3. Luck logic - Higher bets increase winning odds
+      const winProbability = Math.min(0.45, 0.08 + (Math.log10(amount / 100) * 0.12));
       const win = Math.random() < winProbability;
       
+      // Secondary win logic (2 of a kind)
+      const partialWin = !win && Math.random() < 0.25;
+
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
 
-      if (win) {
-        const prize = amount * 5;
-        await supabase.from('players')
-          .update({ balance: currentPlayer.balance - amount + prize })
-          .eq('id', currentPlayer.id);
-        addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
-      } else {
-        // Random refund amounts: 20, 30, 50, 60, 200
-        const possibleRefunds = [20, 30, 50, 60, 200];
-        let refund = possibleRefunds[Math.floor(Math.random() * possibleRefunds.length)];
+      // Stop spin after 2 seconds
+      setTimeout(async () => {
+        clearInterval(spinInterval);
         
-        // Ensure refund isn't larger than the bet for logical consistency 
-        // (unless it's a tiny bet, then we just give 10% like before)
-        if (refund >= amount) {
-          refund = Math.floor(amount * 0.1);
+        let finalReels;
+        if (win) {
+          const winSymbol = symbols[Math.floor(Math.random() * symbols.length)];
+          finalReels = [winSymbol, winSymbol, winSymbol];
+        } else if (partialWin) {
+          const pairSymbol = symbols[Math.floor(Math.random() * symbols.length)];
+          let third = symbols[Math.floor(Math.random() * symbols.length)];
+          while (third === pairSymbol) {
+             third = symbols[Math.floor(Math.random() * symbols.length)];
+          }
+          const order = [pairSymbol, pairSymbol, third].sort(() => Math.random() - 0.5);
+          finalReels = order;
+        } else {
+          const s1 = symbols[Math.floor(Math.random() * symbols.length)];
+          let s2 = symbols[Math.floor(Math.random() * symbols.length)];
+          let s3 = symbols[Math.floor(Math.random() * symbols.length)];
+          if (s1 === s2 && s2 === s3) {
+            s3 = symbols[(symbols.indexOf(s3) + 1) % symbols.length];
+          }
+          finalReels = [s1, s2, s3];
         }
+        
+        setReels(finalReels);
+        setIsSpinning(false);
 
-        const toBank = amount - refund;
-
-        // Give refund back to player
-        if (refund > 0) {
+        if (win) {
+          const prize = amount * 5;
           await supabase.from('players')
-            .update({ balance: currentPlayer.balance - amount + refund })
+            .update({ balance: (currentPlayer.balance - amount) + prize })
             .eq('id', currentPlayer.id);
-        }
-
-        // Give the rest to the bank (Terik)
-        if (terik) {
+          addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
+        } else if (partialWin) {
+          const prize = Math.floor(amount * 1.5);
           await supabase.from('players')
-            .update({ balance: terik.balance + toBank })
-            .eq('id', terik.id);
+            .update({ balance: (currentPlayer.balance - amount) + prize })
+            .eq('id', currentPlayer.id);
+          addToast(`MINI-WIN! Pairs matched! You won $${prize.toLocaleString()}!`, "success");
+        } else {
+          // 50% consolation prize
+          const refund = Math.floor(amount * 0.5);
+          const toBank = amount - refund;
+
+          if (refund > 0) {
+            await supabase.from('players')
+              .update({ balance: (currentPlayer.balance - amount) + refund })
+              .eq('id', currentPlayer.id);
+          }
+
+          if (terik) {
+            await supabase.from('players')
+              .update({ balance: terik.balance + toBank })
+              .eq('id', terik.id);
+          }
+          addToast(`La apuesta se fue al banco. El casino te devolvió el 50% ($${refund.toLocaleString()}) como consolación.`, "info");
         }
+        fetchData(gameId);
+      }, 2000);
 
-        addToast(`La apuesta se fue al banco. El casino te devolvió $${refund.toLocaleString()} como consolación.`, "info");
-      }
-
-      fetchData(gameId);
     } catch (err) {
+      clearInterval(spinInterval);
+      setIsSpinning(false);
       console.error("Casino error:", err);
-      addToast("Casino machine jammed. Table 'bank' might be missing.", "error");
+      addToast("Casino machine jammed.", "error");
     }
   };
 
@@ -779,14 +854,69 @@ export default function Game() {
     
     const newBalance = player.balance + delta;
     
-    // Bankruptcy check
-    if (newBalance < -500) {
-      addToast(`${player.name} DECLARED BANKRUPT!`, "error");
-      await supabase.from('players').update({ balance: 1500, position: 0, is_bankrupt: false }).eq('id', playerId);
-      return;
+    // Track negative balance for 24h automatic deletion
+    let negativeSince = player.negative_since;
+    if (newBalance < 0 && !negativeSince) {
+      negativeSince = new Date().toISOString();
+    } else if (newBalance >= 0) {
+      negativeSince = null;
     }
 
-    await supabase.from('players').update({ balance: newBalance }).eq('id', playerId);
+    await supabase.from('players').update({ 
+      balance: newBalance,
+      negative_since: negativeSince
+    }).eq('id', playerId);
+  };
+
+  const sellProperty = async (spaceId: number) => {
+    const prop = properties.find(p => p.space_id === spaceId);
+    if (!prop || !currentPlayer || prop.owner_id !== currentPlayer.id) return;
+    
+    const space = BOARD_SPACES[spaceId];
+    const salePrice = Math.floor(space.price * 0.7); // Sell for 70%
+    
+    await supabase.from('properties').delete().eq('space_id', spaceId);
+    await handleBalanceUpdate(currentPlayer.id, salePrice);
+    addToast(`${space.name} vendida por $${salePrice.toLocaleString()}`, "info");
+    fetchData(gameId);
+  };
+
+  const mortgageProperty = async (spaceId: number) => {
+    const prop = properties.filter(p => p.space_id === spaceId)[0];
+    if (!prop || !currentPlayer || prop.owner_id !== currentPlayer.id) return;
+
+    if (prop.is_mortgaged) {
+      // Repay mortgage
+      const space = BOARD_SPACES[spaceId];
+      const cost = Math.floor(space.price * 0.6);
+      if (currentPlayer.balance < cost) {
+        addToast("No tienes suficiente para levantar la hipoteca.", "error");
+        return;
+      }
+      await supabase.from('properties').update({ is_mortgaged: false }).eq('space_id', spaceId);
+      await handleBalanceUpdate(currentPlayer.id, -cost);
+      addToast(`Hipotecada levantada de ${space.name}`, "success");
+    } else {
+      // Mortgage
+      const space = BOARD_SPACES[spaceId];
+      const reward = Math.floor(space.price * 0.5); // Mortgage for 50%
+      await supabase.from('properties').update({ is_mortgaged: true }).eq('space_id', spaceId);
+      await handleBalanceUpdate(currentPlayer.id, reward);
+      addToast(`${space.name} embargada (hipotecada) por $${reward.toLocaleString()}`, "info");
+    }
+    fetchData(gameId);
+  };
+
+  const transferProperty = async (toPlayerId: string, spaceId: number) => {
+    const prop = properties.find(p => p.space_id === spaceId);
+    if (!prop || !currentPlayer || prop.owner_id !== currentPlayer.id) return;
+
+    await supabase.from('properties')
+      .update({ owner_id: toPlayerId })
+      .eq('space_id', spaceId);
+    
+    addToast(`${BOARD_SPACES[spaceId].name} transferida a otro jugador`, "success");
+    fetchData(gameId);
   };
 
   // Sync logs to Supabase Storage "Server" bucket
@@ -1233,31 +1363,6 @@ export default function Game() {
     if (!senderErr) {
       addToast(`Transferred $${amount} to ${target?.name}`, "success");
       setLogs(prev => [`TRANSFERRED $${amount} TO ${target?.name.toUpperCase()}`, ...prev]);
-    }
-  };
-
-  const sellProperty = async (spaceId: number) => {
-    if (!currentPlayer) return;
-    const ownership = properties.find(p => p.space_id === spaceId && p.owner_id === currentPlayer.id);
-    if (!ownership) return;
-
-    const space = BOARD_SPACES[spaceId];
-    const sellPrice = Math.floor((space.price || 0) / 2);
-
-    const { error: delError } = await supabase
-      .from('properties')
-      .delete()
-      .eq('space_id', spaceId)
-      .eq('game_id', gameId);
-
-    if (!delError) {
-      const newBalance = currentPlayer.balance + sellPrice;
-      await supabase
-        .from('players')
-        .update({ balance: newBalance })
-        .eq('id', currentPlayer.id);
-      
-      setLogs(prev => [`SOLD ${space.name.toUpperCase()} FOR $${sellPrice}`, ...prev]);
     }
   };
 
@@ -2114,35 +2219,79 @@ export default function Game() {
               </div>
             )}
 
-            {view === 'transfer' && (
-               <div className="flex-1 flex flex-col gap-8">
-                  <div className="flex justify-between items-center">
-                    <h2 className="text-xl font-serif italic">Money Transfer</h2>
-                    <ArrowRightLeft className="text-blue-600 w-5 h-5" />
-                  </div>
-                  <div className="space-y-4">
-                    {players.filter(p => p.id !== currentPlayer?.id).map(p => (
-                      <div key={p.id} className="bg-gray-50 border border-black/[0.03] p-4 rounded-2xl flex items-center justify-between">
-                         <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full" style={{ backgroundColor: p.player_color }} />
-                            <span className="text-[11px] font-black uppercase">{p.name}</span>
+             {view === 'transfer' && (
+                <div className="flex-1 flex flex-col gap-8">
+                   <div className="flex justify-between items-center px-1">
+                     <div>
+                       <h2 className="text-xl font-serif italic text-gray-900">Exchange</h2>
+                       <p className="text-[8px] font-black uppercase tracking-[0.2em] opacity-30 italic">Transfer Assets & Funds</p>
+                     </div>
+                     <ArrowRightLeft className="text-blue-600 w-5 h-5" />
+                   </div>
+
+                   <div className="space-y-6">
+                     <div className="text-[10px] font-black uppercase tracking-widest opacity-20 px-1 italic">Transfer Funds</div>
+                     <div className="space-y-3">
+                       {players.filter(p => p.id !== currentPlayer?.id).map(p => (
+                         <div key={p.id} className="bg-gray-50 border border-black/[0.03] p-5 rounded-[2rem] flex items-center justify-between shadow-sm">
+                            <div className="flex items-center gap-3">
+                               <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-black text-xs shadow-md" style={{ backgroundColor: p.player_color }}>
+                                 {p.name.charAt(0)}
+                               </div>
+                               <span className="text-[11px] font-black uppercase tracking-tight text-gray-900">{p.name}</span>
+                            </div>
+                            <div className="flex gap-2">
+                               {[100, 500, 1000].map(amt => (
+                                  <button 
+                                    key={amt}
+                                    onClick={() => transferMoney(p.id, amt)}
+                                    disabled={!currentPlayer || currentPlayer.balance < amt}
+                                    className="px-4 py-2 bg-white border border-black/5 text-[9px] font-black rounded-xl hover:bg-black hover:text-white transition-all disabled:opacity-20 shadow-sm"
+                                  >
+                                    +${amt}
+                                  </button>
+                               ))}
+                            </div>
                          </div>
-                         <div className="flex gap-1">
-                            {[100, 500].map(amt => (
-                               <button 
-                                 key={amt}
-                                 onClick={() => transferMoney(p.id, amt)}
-                                 className="px-2 py-1 bg-white border border-black/5 text-[9px] font-black rounded-lg"
-                               >
-                                 +${amt}
-                               </button>
-                            ))}
-                         </div>
-                      </div>
-                    ))}
-                  </div>
-               </div>
-            )}
+                       ))}
+                     </div>
+
+                     <div className="pt-6 border-t border-black/5">
+                        <div className="text-[10px] font-black uppercase tracking-widest opacity-20 px-1 italic mb-4">Transfer Properties</div>
+                        <div className="grid grid-cols-1 gap-3">
+                           {properties.filter(p => p.owner_id === currentPlayer?.id).map(prop => {
+                             const space = BOARD_SPACES[prop.space_id];
+                             return (
+                               <div key={prop.space_id} className="bg-gray-50 border border-black/[0.03] p-5 rounded-[2rem] space-y-4 shadow-sm overflow-hidden relative">
+                                  <div className="flex items-center gap-3">
+                                     <div className="w-2 h-8 rounded-full" style={{ backgroundColor: space.color || '#ccc' }} />
+                                     <div>
+                                        <div className="text-[10px] font-black uppercase text-gray-900">{space.name}</div>
+                                        <div className="text-[8px] font-mono opacity-40">Value: ${space.price}</div>
+                                     </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                     {players.filter(p => p.id !== currentPlayer?.id).map(p => (
+                                        <button 
+                                          key={p.id}
+                                          onClick={() => transferProperty(p.id, prop.space_id)}
+                                          className="px-3 py-1.5 bg-white border border-black/5 text-[8px] font-black uppercase rounded-lg hover:bg-blue-600 hover:text-white transition-all shadow-xs"
+                                        >
+                                          Send to {p.name}
+                                        </button>
+                                     ))}
+                                  </div>
+                               </div>
+                             );
+                           })}
+                           {properties.filter(p => p.owner_id === currentPlayer?.id).length === 0 && (
+                             <div className="text-center py-10 text-[9px] font-black uppercase tracking-[0.2em] opacity-20 italic">No assets to trade</div>
+                           )}
+                        </div>
+                     </div>
+                   </div>
+                </div>
+             )}
 
             {view === 'stats' && (
                <div className="flex-1 flex flex-col gap-8">
@@ -2279,6 +2428,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- 1. BASE TABLE UPDATES
 ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS negative_since TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_mortgaged BOOLEAN DEFAULT FALSE;
 
 -- 2. CORPORATE ENTITY TABLES (EMPRESA)
 CREATE TABLE IF NOT EXISTS empresa (
@@ -2385,16 +2537,47 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                 <div className="flex justify-between items-center bg-gradient-to-br from-amber-400 to-amber-600 text-white p-8 rounded-[2.5rem] shadow-2xl relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl" />
                   <div className="relative z-10">
-                    <h2 className="text-3xl font-serif italic mb-1">The Grand Casino</h2>
-                    <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">High Stakes Tycoon Lounge</p>
+                    <h2 className="text-3xl font-serif italic mb-1">JACKPOT TYCOON</h2>
+                    <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">High Stakes Machine</p>
                   </div>
                   <Coins className="w-12 h-12 opacity-30 relative z-10" />
                 </div>
 
-                <div className="bg-black text-white p-8 rounded-[2.5rem] shadow-2xl space-y-6 relative border-t-4 border-amber-500">
+                <div className="bg-black text-white p-8 rounded-[2.5rem] shadow-2xl space-y-8 relative border-t-4 border-amber-500 overflow-hidden">
+                   {/* Slot Machine Display */}
+                   <div className="bg-gradient-to-b from-gray-900 to-black p-8 rounded-[2rem] border border-white/10 shadow-inner relative">
+                      <div className="absolute top-2 left-1/2 -translate-x-1/2 flex gap-1">
+                        <div className="w-1 h-1 bg-red-500 rounded-full animate-pulse" />
+                        <div className="w-1 h-1 bg-amber-500 rounded-full animate-pulse delay-75" />
+                        <div className="w-1 h-1 bg-green-500 rounded-full animate-pulse delay-150" />
+                      </div>
+                      
+                      <div className="flex justify-center gap-4 py-4">
+                         {reels.map((symbol, idx) => (
+                           <motion.div 
+                             key={idx}
+                             animate={isSpinning ? { 
+                               y: [0, -20, 20, 0],
+                               scale: [1, 0.9, 1.1, 1],
+                               filter: ["blur(0px)", "blur(4px)", "blur(0px)"]
+                             } : {}}
+                             transition={isSpinning ? { 
+                               repeat: Infinity, 
+                               duration: 0.15,
+                               delay: idx * 0.05
+                             } : { type: "spring", damping: 10 }}
+                             className="w-20 h-28 bg-white/5 rounded-2xl flex items-center justify-center text-4xl shadow-xl border border-white/5 relative overflow-hidden"
+                           >
+                             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/40 pointer-events-none" />
+                             {symbol}
+                           </motion.div>
+                         ))}
+                      </div>
+                   </div>
+
                   <div className="flex flex-col items-center gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-500">Pot Total (Bank)</span>
-                    <span className="text-5xl font-mono font-black tracking-tighter text-white">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-500">Bank Pot Total</span>
+                    <span className="text-4xl font-mono font-black tracking-tighter text-white">
                       ${casinoPot.toLocaleString()}
                     </span>
                   </div>
@@ -2404,10 +2587,12 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                       <button 
                         key={amt}
                         onClick={() => handleCasinoBet(amt)}
-                        disabled={!currentPlayer || currentPlayer.balance < amt}
-                        className="py-4 bg-white/5 border border-white/10 rounded-2xl text-sm font-black hover:bg-amber-500 hover:border-amber-600 transition-all disabled:opacity-20 active:scale-95"
+                        disabled={!currentPlayer || currentPlayer.balance < amt || isSpinning}
+                        className="py-4 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black hover:bg-amber-500 hover:border-amber-600 transition-all disabled:opacity-20 active:scale-95 flex flex-col items-center gap-1 group overflow-hidden relative"
                       >
-                        BET ${amt.toLocaleString()}
+                        <div className="absolute inset-0 bg-amber-500/0 group-hover:bg-amber-500/10 transition-colors" />
+                        <span className="opacity-40 group-hover:opacity-100 uppercase">Input</span>
+                        <span className="text-sm font-mono">${amt.toLocaleString()}</span>
                       </button>
                     ))}
                   </div>
@@ -2421,10 +2606,10 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                 <div className="space-y-4">
                   <div className="text-[10px] uppercase font-black tracking-widest opacity-20 px-2 italic">Recent Gamblers</div>
                   <div className="space-y-2">
-                    {messages.filter(m => m.text.includes('bet') || m.text.includes('WON')).slice(-5).map((m, i) => (
+                    {messages.filter(m => m.text.includes('bet') || m.text.includes('WON') || m.text.includes('JACKPOT') || m.text.includes('apuesta')).slice(-5).map((m, i) => (
                       <div key={i} className="p-4 bg-gray-50 border border-black/[0.02] rounded-2xl flex justify-between items-center">
                         <span className="text-[10px] font-black uppercase">{m.player_name}</span>
-                        <span className="text-[10px] font-mono opacity-40">{m.text}</span>
+                        <span className="text-[9px] font-mono opacity-40 max-w-[200px] truncate">{m.text}</span>
                       </div>
                     ))}
                   </div>
@@ -2523,13 +2708,36 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                   <div className="max-h-48 overflow-y-auto w-full space-y-2 custom-scrollbar pr-2">
                     {properties.filter(p => p.owner_id === selectedProfile.id).map(prop => {
                       const space = BOARD_SPACES[prop.space_id];
+                      const isMe = currentPlayer?.id === selectedProfile.id;
                       return (
-                        <div key={prop.space_id} className="flex items-center justify-between p-4 bg-gray-50/50 border border-black/[0.02] rounded-2xl">
-                          <div className="flex items-center gap-3">
-                            <div className="w-2 h-6 rounded-full" style={{ backgroundColor: space.color || '#ccc' }} />
-                            <span className="text-xs font-black uppercase tracking-tight">{space.name}</span>
+                        <div key={prop.space_id} className={`p-4 rounded-2xl border ${prop.is_mortgaged ? 'bg-red-50 border-red-100 opacity-60' : 'bg-gray-50/50 border-black/[0.02]'}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                              <div className="w-2 h-6 rounded-full" style={{ backgroundColor: space.color || '#ccc' }} />
+                              <div>
+                                <div className="text-xs font-black uppercase tracking-tight">{space.name}</div>
+                                {prop.is_mortgaged && <div className="text-[7px] font-bold text-red-500 uppercase tracking-widest">Hipotecada</div>}
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-mono opacity-40">${space.price}</span>
                           </div>
-                          <span className="text-[10px] font-mono opacity-40">${space.price}</span>
+                          
+                          {isMe && (
+                            <div className="flex gap-2 mt-3">
+                              <button 
+                                onClick={() => sellProperty(prop.space_id)}
+                                className="flex-1 py-2 bg-white border border-black/5 rounded-lg text-[8px] font-black uppercase hover:bg-red-50 hover:text-red-600 transition-all"
+                              >
+                                Vender (70%)
+                              </button>
+                              <button 
+                                onClick={() => mortgageProperty(prop.space_id)}
+                                className={`flex-1 py-2 border rounded-lg text-[8px] font-black uppercase transition-all ${prop.is_mortgaged ? 'bg-amber-100 border-amber-200 text-amber-700' : 'bg-white border-black/5 hover:bg-amber-50'}`}
+                              >
+                                {prop.is_mortgaged ? 'Levantar' : 'Embargar (50%)'}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
