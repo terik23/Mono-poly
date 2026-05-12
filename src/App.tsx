@@ -717,17 +717,12 @@ export default function Game() {
         amount: amount
       });
 
-      // 3. Find Terik and transfer
-      const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
-      if (terik) {
-        await supabase.from('players')
-          .update({ balance: terik.balance + amount })
-          .eq('id', terik.id);
-      }
-
-      // 4. Luck logic - Higher bets increase winning odds (scaling from 5% to 35%)
+      // 3. Luck logic - Higher bets increase winning odds (scaling from 5% to 35%)
       const winProbability = Math.min(0.4, 0.05 + (Math.log10(amount / 100) * 0.1));
       const win = Math.random() < winProbability;
+      
+      const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+
       if (win) {
         const prize = amount * 5;
         await supabase.from('players')
@@ -735,7 +730,33 @@ export default function Game() {
           .eq('id', currentPlayer.id);
         addToast(`JACKPOT! You won $${prize.toLocaleString()}!`, "success");
       } else {
-        addToast(`Gamble lost. $${amount} donated to the Great Bank of Terik.`, "info");
+        // Random refund amounts: 20, 30, 50, 60, 200
+        const possibleRefunds = [20, 30, 50, 60, 200];
+        let refund = possibleRefunds[Math.floor(Math.random() * possibleRefunds.length)];
+        
+        // Ensure refund isn't larger than the bet for logical consistency 
+        // (unless it's a tiny bet, then we just give 10% like before)
+        if (refund >= amount) {
+          refund = Math.floor(amount * 0.1);
+        }
+
+        const toBank = amount - refund;
+
+        // Give refund back to player
+        if (refund > 0) {
+          await supabase.from('players')
+            .update({ balance: currentPlayer.balance - amount + refund })
+            .eq('id', currentPlayer.id);
+        }
+
+        // Give the rest to the bank (Terik)
+        if (terik) {
+          await supabase.from('players')
+            .update({ balance: terik.balance + toBank })
+            .eq('id', terik.id);
+        }
+
+        addToast(`La apuesta se fue al banco. El casino te devolvió $${refund.toLocaleString()} como consolación.`, "info");
       }
 
       fetchData(gameId);
