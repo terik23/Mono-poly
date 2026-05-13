@@ -112,13 +112,10 @@ interface Player {
   debt: number;
   position: number;
   last_roll_at: string | null;
-  last_daily_at: string;
+  last_daily_at?: string;
   last_tax_at?: string | null;
   player_color: string;
   avatar_url?: string;
-  is_bankrupt?: boolean;
-  debt_started_at?: string | null;
-  negative_since?: string | null;
   airplane_style?: string;
 }
 
@@ -144,8 +141,8 @@ const AIRPLANE_STYLES = [
   { id: 'custom_name', name: 'Nombre', description: 'Identificación única' },
 ];
 
-const PlayerToken = ({ player, size = 'md', className }: { player: Player, size?: 'xs' | 'sm' | 'md' | 'lg', className?: string }) => {
-  const style = player.airplane_style || 'default';
+const PlayerToken = ({ player, size = 'md', className }: { player: any, size?: 'xs' | 'sm' | 'md' | 'lg', className?: string }) => {
+  const style = 'default';
   const color = player.player_color;
   
   const sizeClasses = {
@@ -265,9 +262,9 @@ export default function Game() {
   const [memorySelection, setMemorySelection] = useState<number[]>([]);
 
   const [missions, setMissions] = useState([
-    { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 1500, goal: 50, current: 0, completed: false },
-    { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 4000, goal: 10000, current: 0, completed: false },
-    { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 6000, goal: 5, current: 0, completed: false },
+    { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 300, goal: 50, current: 0, completed: false },
+    { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 800, goal: 10000, current: 0, completed: false },
+    { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 1500, goal: 5, current: 0, completed: false },
   ]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -300,67 +297,8 @@ export default function Game() {
   
   const [transferAmount, setTransferAmount] = useState<string>('');
 
-  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !currentPlayer) return;
-
-    if (file.size > 1200000) { // Limit to ~1.2MB for Base64 storage
-      addToast("Image too large (Max 1.2MB).", "error");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64String = reader.result as string;
-      
-      try {
-        const { error } = await supabase
-          .from('players')
-          .update({ avatar_url: base64String })
-          .eq('id', currentPlayer.id);
-
-        if (error) {
-          console.error("Supabase update error:", error);
-          if (error.code === 'PGRST204' || error.code === '42703') {
-            addToast("Database column missing. Please run the SQL fix in System Logs.", "error");
-          } else {
-            throw error;
-          }
-          return;
-        }
-
-        // Update local state
-        const updatedPlayer = { ...currentPlayer, avatar_url: base64String };
-        setCurrentPlayer(updatedPlayer);
-        setSelectedProfile(updatedPlayer);
-        setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? updatedPlayer : p));
-        addToast("Profile photo updated!", "success");
-      } catch (err) {
-        console.error("Avatar update error:", err);
-        addToast("Failed to upload. Try a smaller image.", "error");
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const updateAirplaneStyle = async (playerId: string, styleId: string) => {
-    const { error } = await supabase
-      .from('players')
-      .update({ airplane_style: styleId })
-      .eq('id', playerId);
-
-    if (error) {
-      addToast("Failed to update style", "error");
-    } else {
-      addToast(`¡Estilo applied!`, "success");
-      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, airplane_style: styleId } : p));
-      if (currentPlayer?.id === playerId) {
-        setCurrentPlayer(prev => prev ? { ...prev, airplane_style: styleId } : null);
-        const updatedProfile = players.find(p => p.id === playerId);
-        if (updatedProfile) setSelectedProfile({ ...updatedProfile, airplane_style: styleId } as Player);
-      }
-    }
-  };
+  const handleAvatarChange = undefined;
+  const updateAirplaneStyle = undefined;
 
   const updatePlayerColor = async (playerId: string, color: string) => {
     const { error } = await supabase
@@ -474,24 +412,10 @@ export default function Game() {
         return data;
       };
 
-      const pData = await fetchSafely('players', supabase.from('players').select('*').eq('game_id', gid));
+      const playerColumns = 'id, game_id, name, password, balance, debt, position, last_roll_at, last_daily_at, last_tax_at, player_color';
+      const pData = await fetchSafely('players', supabase.from('players').select(playerColumns).eq('game_id', gid));
       if (pData) {
         setPlayers(pData);
-        
-        // AUTO-ELIMINATION: Check for negative balance > 24h
-        pData.forEach(async (p: any) => {
-          if (p.negative_since) {
-             const negStart = new Date(p.negative_since).getTime();
-             const now = Date.now();
-             const diffHours = (now - negStart) / (1000 * 60 * 60);
-             if (diffHours >= 24) {
-                // Delete player and properties
-                await supabase.from('players').delete().eq('id', p.id);
-                await supabase.from('properties').delete().eq('owner_id', p.id);
-                addToast(`Account ELIMINATED: ${p.name} had negative balance for >24h`, "error");
-             }
-          }
-        });
       }
 
       const propData = await fetchSafely('properties', supabase.from('properties').select('*').eq('game_id', gid));
@@ -981,9 +905,18 @@ export default function Game() {
     }
   };
 
+  const calculateLevel = (player: Player) => {
+    const netWorth = player.balance + (properties.filter(p => p.owner_id === player.id).length * 1000);
+    const level = Math.floor(Math.sqrt(netWorth / 250)) + 1;
+    const nextLevelThreshold = Math.pow(level, 2) * 250;
+    const currentLevelThreshold = Math.pow(level - 1, 2) * 250;
+    const progress = ((netWorth - currentLevelThreshold) / (nextLevelThreshold - currentLevelThreshold)) * 100;
+    return { level, progress, netWorth };
+  };
+
   const handleCasinoBet = async (amount: number) => {
     if (!currentPlayer || currentPlayer.balance < amount || isSpinning) {
-      if (!isSpinning) addToast("Insufficient funds for this bet!", "error");
+      if (!isSpinning) addToast("No tienes suficiente para apostar esa cantidad", "error");
       return;
     }
 
@@ -1000,7 +933,7 @@ export default function Game() {
     }, 80);
 
     try {
-      // 1. Deduct from player
+      // 1. Deduct from player - synchronously check if this succeeds
       await handleBalanceUpdate(currentPlayer.id, -amount);
 
       // 2. Record in bank
@@ -1014,17 +947,13 @@ export default function Game() {
       setMissions(prev => prev.map(m => m.id === 2 ? { ...m, current: Math.min(m.goal, m.current + amount) } : m));
 
       // 3. Payout Logic - Random percentage from user list
-      const percentageOptions = [10, 20, 30, 50, 60, 70, 80, 100, 200, 300];
+      const percentageOptions = [10, 20, 30, 50, 60, 70, 80, 100, 200, 300, 500];
       const selectedPercentage = percentageOptions[Math.floor(Math.random() * percentageOptions.length)];
       const prize = Math.floor(amount * (selectedPercentage / 100));
       
       const isWin = selectedPercentage > 100;
       const isBreakEven = selectedPercentage === 100;
-      const isPartialLoss = selectedPercentage < 100;
-
-      const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
-      const balAtStart = currentPlayer.balance;
-
+      
       // Stop spin after 2 seconds
       setTimeout(async () => {
         clearInterval(spinInterval);
@@ -1034,39 +963,41 @@ export default function Game() {
           const winSymbol = symbols[Math.floor(Math.random() * symbols.length)];
           finalReels = [winSymbol, winSymbol, winSymbol];
         } else if (isBreakEven) {
-          // Two of a kind for break even
           const s1 = symbols[0];
           const s2 = symbols[0];
           const s3 = symbols[1];
           finalReels = [s1, s2, s3].sort(() => Math.random() - 0.5);
         } else {
-          // Different symbols for loss
-          const s1 = symbols[0];
-          const s2 = symbols[1];
-          const s3 = symbols[2];
+          const s1 = symbols[Math.floor(Math.random() * 3)];
+          const s2 = symbols[Math.floor(Math.random() * 3 + 3)];
+          const s3 = symbols[Math.floor(Math.random() * 3 + 6)];
           finalReels = [s1, s2, s3].sort(() => Math.random() - 0.5);
         }
         
         setReels(finalReels);
         setIsSpinning(false);
 
-        // Update Player via safe utility
-        await handleBalanceUpdate(currentPlayer.id, prize);
+        // Update Prize via safe utility
+        try {
+          await handleBalanceUpdate(currentPlayer.id, prize);
+          
+          // Update House (Terik) - House takes the net profit/loss
+          const houseChange = amount - prize;
+          const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+          if (terik && houseChange !== 0) {
+            await handleBalanceUpdate(terik.id, houseChange);
+          }
 
-        // Update House (Terik) - House takes the net profit/loss
-        const houseChange = amount - prize;
-        const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
-        if (terik && houseChange !== 0) {
-          await handleBalanceUpdate(terik.id, houseChange);
-        }
-
-        if (isWin) {
-          addToast(`¡GANASTE! Retorno del ${selectedPercentage}%: +$${prize.toLocaleString()}`, "success");
-          confetti({ particleCount: 200, spread: 80 });
-        } else if (isBreakEven) {
-          addToast(`¡EMPATE! Recuperaste tu apuesta: $${prize.toLocaleString()}`, "info");
-        } else {
-          addToast(`¡PERDISTE! Solo recuperaste el ${selectedPercentage}% ($${prize.toLocaleString()})`, "error");
+          if (isWin) {
+            addToast(`¡GANASTE! Retorno del ${selectedPercentage}%: +$${prize.toLocaleString()}`, "success");
+            confetti({ particleCount: 200, spread: 80 });
+          } else if (isBreakEven) {
+            addToast(`¡EMPATE! Recuperaste tu apuesta: $${prize.toLocaleString()}`, "info");
+          } else {
+            addToast(`¡PERDISTE! Solo recuperaste el ${selectedPercentage}% ($${prize.toLocaleString()})`, "error");
+          }
+        } catch (prizeErr) {
+          addToast("Error al cobrar el premio. Contacta soporte.", "error");
         }
         
         fetchData(gameId);
@@ -1076,7 +1007,7 @@ export default function Game() {
       clearInterval(spinInterval);
       setIsSpinning(false);
       console.error("Casino error:", err);
-      addToast("Casino machine jammed.", "error");
+      addToast("La máquina se trabó. No se cobró la apuesta.", "error");
     }
   };
 
@@ -1088,64 +1019,68 @@ export default function Game() {
        setTimeout(() => setMoneyChanges(prev => prev.filter(m => m.id !== id)), 2000);
     }
 
-    try {
-      // RELIABILITY FIX: Fetch latest balance from DB before update to prevent overwriting other concurrent changes
-      const { data: latestPlayer, error: fetchError } = await supabase
-        .from('players')
-        .select('balance, negative_since')
-        .eq('id', playerId)
-        .single();
-      
-      if (fetchError || !latestPlayer) throw fetchError || new Error("Player not found");
-      
-      const newBalance = latestPlayer.balance + delta;
-      
-      // Track negative balance for 24h automatic deletion
-      let negativeSince = latestPlayer.negative_since;
-      if (newBalance < 0 && !negativeSince) {
-        negativeSince = new Date().toISOString();
-      } else if (newBalance >= 0) {
-        negativeSince = null;
-      }
+    const maxRetries = 3;
+    let lastError = null;
 
-      const { error: updateError } = await supabase.from('players').update({ 
-        balance: newBalance,
-        negative_since: negativeSince
-      }).eq('id', playerId);
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // RELIABILITY FIX: Fetch latest balance from DB before update to prevent overwriting other concurrent changes
+        const { data: latestPlayer, error: fetchError } = await supabase
+          .from('players')
+          .select('balance')
+          .eq('id', playerId)
+          .single();
+        
+        if (fetchError || !latestPlayer) throw fetchError || new Error("Player not found");
+        
+        const newBalance = latestPlayer.balance + delta;
+        
+        const { error: updateError } = await supabase.from('players').update({ 
+          balance: newBalance
+        }).eq('id', playerId);
 
-      if (updateError) throw updateError;
+        if (updateError) throw updateError;
 
-      // Update Player Stock Price based on wealth movement
-      const playerStock = stocks.find(s => s.owner_id === playerId);
-      if (playerStock) {
-        const volatility = 0.001; 
-        const percentageChange = delta * volatility;
-        const newPrice = Math.max(1.0, playerStock.price * (1 + percentageChange));
-        const newHistory = [...(playerStock.history || []).slice(-29), { 
-          time: new Date().toLocaleTimeString(), 
-          price: Number(newPrice.toFixed(2)) 
-        }];
+        // Update Player Stock Price based on wealth movement
+        const playerStock = stocks.find(s => s.owner_id === playerId);
+        if (playerStock) {
+          const volatility = 0.001; 
+          const percentageChange = delta * volatility;
+          const newPrice = Math.max(1.0, playerStock.price * (1 + percentageChange));
+          const newHistory = [...(playerStock.history || []).slice(-29), { 
+            time: new Date().toLocaleTimeString(), 
+            price: Number(newPrice.toFixed(2)) 
+          }];
 
-        await supabase.from('stocks').update({
-          price: Number(newPrice.toFixed(2)),
-          history: newHistory,
-          change: Number((percentageChange * 100).toFixed(2)),
-          updated_at: new Date().toISOString()
-        }).eq('symbol', playerStock.symbol);
-      }
-      
-      // Update local state if needed
-      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, balance: newBalance, negative_since: negativeSince } : p));
-      if (currentPlayer?.id === playerId) {
-        setCurrentPlayer(prev => prev ? { ...prev, balance: newBalance, negative_since: negativeSince } : null);
-      }
-    } catch (err) {
-      console.error("Balance update failed:", err);
-      // Fallback: Notify if it was a significant loss/gain
-      if (Math.abs(delta) > 500) {
-        addToast("Error al sincronizar dinero. Reintente.", "error");
+          await supabase.from('stocks').update({
+            price: Number(newPrice.toFixed(2)),
+            history: newHistory,
+            change: Number((percentageChange * 100).toFixed(2)),
+            updated_at: new Date().toISOString()
+          }).eq('symbol', playerStock.symbol);
+        }
+        
+        // Update local state if needed
+        setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, balance: newBalance } : p));
+        if (currentPlayer?.id === playerId) {
+          setCurrentPlayer(prev => prev ? { ...prev, balance: newBalance } : null);
+        }
+
+        return true; // Success
+      } catch (err) {
+        lastError = err;
+        console.warn(`Balance update attempt ${attempt + 1} failed for ${playerId}:`, err);
+        // Exponential backoff
+        await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
       }
     }
+
+    console.error("Balance update finally failed:", lastError);
+    // Notify if it was a significant loss/gain
+    if (Math.abs(delta) > 100 && currentPlayer?.id === playerId) {
+      addToast("Fallo crítico al sincronizar dinero. Contacta a Terik.", "error");
+    }
+    throw lastError || new Error("Failed after retries");
   };
 
   const sellProperty = async (spaceId: number) => {
@@ -1155,7 +1090,7 @@ export default function Game() {
     const space = BOARD_SPACES[spaceId];
     const salePrice = Math.floor(space.price * 0.7); // Sell for 70%
     
-    await supabase.from('properties').delete().eq('space_id', spaceId);
+    await supabase.from('properties').delete().eq('space_id', spaceId).eq('game_id', gameId);
     await handleBalanceUpdate(currentPlayer.id, salePrice);
     addToast(`${space.name} vendida por $${salePrice.toLocaleString()}`, "info");
     fetchData(gameId);
@@ -1173,14 +1108,14 @@ export default function Game() {
         addToast("No tienes suficiente para levantar la hipoteca.", "error");
         return;
       }
-      await supabase.from('properties').update({ is_mortgaged: false }).eq('space_id', spaceId);
+      await supabase.from('properties').update({ is_mortgaged: false }).eq('space_id', spaceId).eq('game_id', gameId);
       await handleBalanceUpdate(currentPlayer.id, -cost);
       addToast(`Hipotecada levantada de ${space.name}`, "success");
     } else {
       // Mortgage
       const space = BOARD_SPACES[spaceId];
       const reward = Math.floor(space.price * 0.5); // Mortgage for 50%
-      await supabase.from('properties').update({ is_mortgaged: true }).eq('space_id', spaceId);
+      await supabase.from('properties').update({ is_mortgaged: true }).eq('space_id', spaceId).eq('game_id', gameId);
       await handleBalanceUpdate(currentPlayer.id, reward);
       addToast(`${space.name} embargada (hipotecada) por $${reward.toLocaleString()}`, "info");
     }
@@ -1193,7 +1128,8 @@ export default function Game() {
 
     await supabase.from('properties')
       .update({ owner_id: toPlayerId })
-      .eq('space_id', spaceId);
+      .eq('space_id', spaceId)
+      .eq('game_id', gameId);
     
     addToast(`${BOARD_SPACES[spaceId].name} transferida a otro jugador`, "success");
     fetchData(gameId);
@@ -1253,7 +1189,7 @@ export default function Game() {
 
   const completeJob = async () => {
     if (!currentPlayer) return;
-    const reward = 250;
+    const reward = 30;
     
     // Mission progress
     setMissions(prev => prev.map(m => m.id === 1 ? { ...m, current: Math.min(m.goal, m.current + 10) } : m));
@@ -1347,6 +1283,12 @@ export default function Game() {
         schema: 'public', 
         table: 'properties'
       }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          // If property is deleted, we need to refresh full state because we don't have game_id usually in payload.old
+          fetchData(gameId);
+          return;
+        }
+        
         if (payload.new && (payload.new as PropertyOwnership).game_id === gameId) {
           const updatedProp = payload.new as PropertyOwnership;
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
@@ -1357,9 +1299,6 @@ export default function Game() {
               }
               return [...prev, updatedProp];
             });
-          } else if (payload.eventType === 'DELETE') {
-            // Handle property sales
-            fetchData(gameId);
           }
         }
       })
@@ -1467,7 +1406,7 @@ export default function Game() {
     try {
       const { data: existingPlayer, error: checkError } = await supabase
         .from('players')
-        .select('*')
+        .select('id, game_id, name, password, balance, position, player_color, debt, last_roll_at, last_daily_at, last_tax_at')
         .eq('game_id', gameId)
         .ilike('name', playerName)
         .maybeSingle();
@@ -1485,12 +1424,13 @@ export default function Game() {
           addToast("Operator not found. Please Sign Up.", "error");
           return;
         }
+
         if (existingPlayer.password && existingPlayer.password !== password) {
           addToast("Invalid Security Key", "error");
           return;
         }
         
-        setCurrentPlayer({ ...existingPlayer, password });
+        setCurrentPlayer(existingPlayer);
         setIsJoined(true);
         fetchData(gameId);
         return;
@@ -1511,7 +1451,7 @@ export default function Game() {
       const { data, error: insertError } = await supabase
         .from('players')
         .insert(newPlayer)
-        .select()
+        .select('id, game_id, name, password, balance, position, player_color, debt, last_roll_at, last_daily_at, last_tax_at')
         .single();
 
       if (insertError) throw insertError;
@@ -1548,7 +1488,7 @@ export default function Game() {
     let nextPos = (currentPlayer.position + move) % 200;
     let balance = currentPlayer.balance;
 
-    const lastDaily = new Date(currentPlayer.last_daily_at);
+    const lastDaily = currentPlayer.last_daily_at ? new Date(currentPlayer.last_daily_at) : new Date(0);
     if (new Date().getTime() - lastDaily.getTime() > 24 * 60 * 60 * 1000) {
       balance += 100;
       addToast("Daily dividend $100 collected", "success");
@@ -1590,11 +1530,41 @@ export default function Game() {
     const space = BOARD_SPACES[nextPos];
     setLogs(prev => [`ROLLED ${move}! ARRIVED AT ${space.name.toUpperCase()}`, ...prev]);
 
+    // Community Chest Handling
+    if (space.type === 'chest') {
+       const effects = [
+         { msg: "Error del banco a tu favor: +$200", amount: 200 },
+         { msg: "Gastos hospitalarios: -$100", amount: -100 },
+         { msg: "Venta de acciones: +$50", amount: 50 },
+         { msg: "Impuesto de Servicios (Cofre): -$50", amount: -50 },
+         { msg: "Premio de lotería: +$100", amount: 100 }
+       ];
+       const effect = effects[Math.floor(Math.random() * effects.length)];
+       balance += effect.amount;
+       addToast(`COFRE: ${effect.msg}`, effect.amount > 0 ? "success" : "error");
+       setLogs(prev => [`CHEST: ${effect.msg}`, ...prev]);
+    }
+
+    // Chance Handling
+    if (space.type === 'chance') {
+       const effects = [
+         { msg: "Mantenimiento de propiedades: -$150", amount: -150 },
+         { msg: "Avanza hacia GO: +$200", amount: 200 },
+         { msg: "Multa de tráfico: -$50", amount: -50 },
+         { msg: "Dividendos de inversión: +$150", amount: 150 },
+         { msg: "Reparaciones de urgencia: -$100", amount: -100 }
+       ];
+       const effect = effects[Math.floor(Math.random() * effects.length)];
+       balance += effect.amount;
+       addToast(`SUERTE: ${effect.msg}`, effect.amount > 0 ? "success" : "error");
+       setLogs(prev => [`CHANCE: ${effect.msg}`, ...prev]);
+    }
+
     // Tax handling - Redirected to TERIK
     if (space.type === 'tax') {
        const taxAmount = space.price || 100;
        balance -= taxAmount;
-       addToast(`Tax Paid: $${taxAmount.toLocaleString()}`, "error");
+       addToast(`Impuesto de Propiedad: -$${taxAmount.toLocaleString()}`, "error");
        
        const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
        if (terik) {
@@ -1709,35 +1679,24 @@ export default function Game() {
       const downPayment = canAfford ? cost : cost * 0.5;
       const loanDebt = canAfford ? 0 : (cost * 0.5) * 1.25;
       
-      const newBalance = currentPlayer.balance - downPayment;
-      
       setLogs(prev => [`Bought ${space.name} ${loanDebt > 0 ? '(Financed)' : ''} for $${downPayment}`, ...prev]);
       
       // Update mission progress for buying properties
       setMissions(prev => prev.map(m => m.id === 3 ? { ...m, current: Math.min(m.goal, m.current + 1) } : m));
 
-      // Update local state for immediate feedback
-      setProperties(prev => [...prev, {
-        id: Math.random().toString(), 
-        space_id: spaceId,
-        game_id: gameId,
-        owner_id: currentPlayer.id,
-        buildings: 0,
-        mortgaged: false
-      } as any]);
-      
-      setCurrentPlayer({ ...currentPlayer, balance: newBalance });
-      setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? { ...p, balance: newBalance } : p));
+      // Update balance reliably
+      await handleBalanceUpdate(currentPlayer.id, -downPayment);
       
       if (loanDebt > 0) {
         updateDebt(currentPlayer.id, loanDebt);
-        addToast(`Property financed: $${loanDebt.toFixed(0)} debt added`, "info");
+        addToast(`Propiedad financiada: $${loanDebt.toFixed(0)} de deuda agregada`, "info");
       }
-
-      await supabase
-        .from('players')
-        .update({ balance: newBalance })
-        .eq('id', currentPlayer.id);
+      
+      addToast(`¡Compraste ${space.name}!`, "success");
+      fetchData(gameId);
+    } else {
+      console.error("Error al comprar propiedad:", propError);
+      addToast("Error al comprar la propiedad. Quizás alguien la compró antes.", "error");
     }
   };
 
@@ -1762,6 +1721,7 @@ export default function Game() {
       .eq('game_id', gameId);
 
     await handleBalanceUpdate(currentPlayer.id, -houseCost);
+    fetchData(gameId);
 
     setLogs(prev => [`Upgraded ${space.name} for $${houseCost}`, ...prev]);
   };
@@ -1919,27 +1879,27 @@ export default function Game() {
               </div>
             )}
 
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">
-                  {authMode === 'login' ? 'Operator Name' : 'New Identity'}
-                </label>
-                <input type="text" placeholder="ENTER NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">
+                    {authMode === 'login' ? 'Operator Name' : 'New Identity'}
+                  </label>
+                  <input type="text" placeholder="ENTER NAME" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Access Key</label>
+                  <input type="password" placeholder="PASSWORD" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={password} onChange={(e) => setPassword(e.target.value)} />
+                </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-[11px] uppercase tracking-widest opacity-40 font-black ml-1 text-blue-600">Access Key</label>
-                <input type="password" placeholder="PASSWORD" className="w-full px-8 py-5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder:opacity-30 focus:border-blue-500/50 transition-all outline-none font-mono uppercase text-sm shadow-inner" value={password} onChange={(e) => setPassword(e.target.value)} />
-              </div>
-            </div>
-            {errorMsg && (
-              <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
-                <span className="font-bold uppercase block mb-1">Error:</span>
-                {errorMsg}
-              </div>
-            )}
-            <button onClick={joinGame} disabled={!playerName || !password} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">
-              {authMode === 'login' ? 'Authenticate' : 'Register Operator'}
-            </button>
+              {errorMsg && (
+                <div className="p-5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-mono leading-relaxed">
+                  <span className="font-bold uppercase block mb-1">Error:</span>
+                  {errorMsg}
+                </div>
+              )}
+              <button onClick={joinGame} disabled={!playerName || !password} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">
+                {authMode === 'login' ? 'Authenticate' : 'Register Operator'}
+              </button>
           </div>
           <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Syncing: Online</p>
         </motion.div>
@@ -2042,11 +2002,7 @@ export default function Game() {
                 <span className="text-black text-[10px] md:text-xs font-bold font-sans uppercase tracking-tight">{currentPlayer?.name}</span>
              </div>
              <div className="w-9 h-9 md:w-10 md:h-10 rounded-sm border border-black/5 flex items-center justify-center text-xs font-mono shadow-sm overflow-hidden" style={{ backgroundColor: currentPlayer?.player_color + '22', color: currentPlayer?.player_color }}>
-                {currentPlayer?.avatar_url ? (
-                  <img src={currentPlayer.avatar_url} className="w-full h-full object-cover" alt={currentPlayer.name} referrerPolicy="no-referrer" />
-                ) : (
-                  currentPlayer?.name.charAt(0)
-                )}
+                {currentPlayer?.name.charAt(0)}
              </div>
           </button>
         </div>
@@ -2854,7 +2810,7 @@ export default function Game() {
                                  "w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white shadow-xl overflow-hidden border-2 border-white",
                                  isGold ? "w-16 h-16 bg-amber-400 -translate-y-4" : isSilver ? "bg-slate-300" : "bg-orange-400"
                                )} style={{ backgroundColor: isGold ? undefined : player.player_color }}>
-                                 {player.avatar_url ? <img src={player.avatar_url} className="w-full h-full object-cover" /> : player.name[0]}
+                                 <div className="w-full h-full flex items-center justify-center text-[8px] font-black">{player.name[0]}</div>
                                  {isGold && <Trophy className="absolute -top-3 -right-3 w-8 h-8 text-amber-500 drop-shadow-lg" />}
                                </div>
                                <div className="absolute -bottom-2 left-1/2 -ms-x-1/2 -translate-x-1/2 bg-black text-white text-[8px] font-black px-2 py-0.5 rounded-full z-10">#{pIdx+1}</div>
@@ -3235,28 +3191,9 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                     className="w-32 h-32 rounded-[2rem] border-8 shadow-xl flex items-center justify-center text-4xl font-black text-white mb-6 overflow-hidden relative z-10 border-white"
                     style={{ backgroundColor: selectedProfile.player_color }}
                   >
-                    {selectedProfile.avatar_url ? (
-                      <img src={selectedProfile.avatar_url} className="w-full h-full object-cover" alt={selectedProfile.name} referrerPolicy="no-referrer" />
-                    ) : (
-                      selectedProfile.name.charAt(0)
-                    )}
+                    {selectedProfile.name.charAt(0)}
                   </div>
-                  {currentPlayer?.id === selectedProfile.id && (
-                    <button 
-                      onClick={() => fileInputRef.current?.click()}
-                      className="absolute bottom-4 right-0 w-10 h-10 bg-black text-white rounded-2xl flex items-center justify-center shadow-lg border-4 border-white translate-x-1/4 hover:bg-blue-600 transition-all z-20"
-                    >
-                      <Camera className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleAvatarChange} 
-                  className="hidden" 
-                  accept="image/*" 
-                />
                 
                 <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">
                   {selectedProfile.name}
@@ -3276,6 +3213,25 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                   </div>
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-2">Tycoon Operator</span>
+
+                {/* Leveling Progress */}
+                <div className="w-full mt-6 bg-gray-50 p-4 rounded-3xl border border-black/[0.03]">
+                   <div className="flex justify-between items-center mb-2">
+                     <span className="text-[9px] font-black uppercase tracking-widest opacity-30">Nivel de Tycoon</span>
+                     <span className="text-[10px] font-black text-blue-600">NV {calculateLevel(selectedProfile).level}</span>
+                   </div>
+                   <div className="h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                     <motion.div 
+                       initial={{ width: 0 }}
+                       animate={{ width: `${calculateLevel(selectedProfile).progress}%` }}
+                       className="h-full bg-blue-600"
+                     />
+                   </div>
+                   <div className="flex justify-between items-center mt-1.5">
+                     <span className="text-[7px] font-bold opacity-30 uppercase">XP DE PATRIMONIO</span>
+                     <span className="text-[7px] font-bold opacity-30 uppercase">${calculateLevel(selectedProfile).netWorth.toLocaleString()} NET WORTH</span>
+                   </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-4 w-full mt-10">
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
@@ -3300,11 +3256,11 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
 
                 {currentPlayer?.id === selectedProfile.id && (
                   <div className="w-full mt-8 space-y-4">
-                    <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Personaliza tu Avión</div>
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Personaliza tu Tycoon</div>
                     
                     {/* Color Picker */}
                     <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03]">
-                      <div className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-4">Colores del Fuselaje</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-4">Colores de Jugador</div>
                       <div className="flex flex-wrap gap-2">
                         {PLAYER_COLORS.map(color => (
                           <button
@@ -3316,36 +3272,6 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                             )}
                             style={{ backgroundColor: color }}
                           />
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Style Picker */}
-                    <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03]">
-                      <div className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-4">Estilos Especiales</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {AIRPLANE_STYLES.map(style => (
-                          <button
-                            key={style.id}
-                            onClick={() => updateAirplaneStyle(currentPlayer.id, style.id)}
-                            className={cn(
-                              "p-3 rounded-2xl border transition-all text-left flex items-center gap-3",
-                              selectedProfile.airplane_style === style.id || (!selectedProfile.airplane_style && style.id === 'default')
-                                ? "bg-black text-white border-black" 
-                                : "bg-white border-black/5 hover:border-black/20"
-                            )}
-                          >
-                            <PlayerToken 
-                              player={{ ...selectedProfile, airplane_style: style.id }} 
-                              size="xs" 
-                            />
-                            <div>
-                              <div className="text-[9px] font-black uppercase leading-none mb-1">{style.name}</div>
-                              <div className={cn("text-[6px] uppercase tracking-wider opacity-60", selectedProfile.airplane_style === style.id ? "text-white" : "text-gray-500")}>
-                                {style.description}
-                              </div>
-                            </div>
-                          </button>
                         ))}
                       </div>
                     </div>
