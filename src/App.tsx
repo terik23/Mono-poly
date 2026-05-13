@@ -265,9 +265,9 @@ export default function Game() {
   const [memorySelection, setMemorySelection] = useState<number[]>([]);
 
   const [missions, setMissions] = useState([
-    { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 5000, goal: 50, current: 0, completed: false },
-    { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 15000, goal: 10000, current: 0, completed: false },
-    { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 20000, goal: 5, current: 0, completed: false },
+    { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 1500, goal: 50, current: 0, completed: false },
+    { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 4000, goal: 10000, current: 0, completed: false },
+    { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 6000, goal: 5, current: 0, completed: false },
   ]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -959,16 +959,26 @@ export default function Game() {
   };
 
   const updateDebt = async (playerId: string, delta: number) => {
-     const player = players.find(p => p.id === playerId);
-     if (!player) return;
-     const newDebt = Math.max(0, (player.debt || 0) + delta);
-     
-     setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, debt: newDebt } : p));
-     if (currentPlayer?.id === playerId) {
-        setCurrentPlayer(prev => prev ? { ...prev, debt: newDebt } : null);
-     }
+    try {
+      const { data: latestPlayer, error } = await supabase
+        .from('players')
+        .select('debt')
+        .eq('id', playerId)
+        .single();
+      
+      if (error || !latestPlayer) return;
+      
+      const newDebt = Math.max(0, (latestPlayer.debt || 0) + delta);
+      
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, debt: newDebt } : p));
+      if (currentPlayer?.id === playerId) {
+         setCurrentPlayer(prev => prev ? { ...prev, debt: newDebt } : null);
+      }
 
-     await supabase.from('players').update({ debt: newDebt }).eq('id', playerId);
+      await supabase.from('players').update({ debt: newDebt }).eq('id', playerId);
+    } catch (e) {
+      console.error("Debt update failed:", e);
+    }
   };
 
   const handleCasinoBet = async (amount: number) => {
@@ -991,16 +1001,7 @@ export default function Game() {
 
     try {
       // 1. Deduct from player
-      const { error: deductError } = await supabase
-        .from('players')
-        .update({ balance: currentPlayer.balance - amount })
-        .eq('id', currentPlayer.id);
-      
-      if (deductError) {
-        clearInterval(spinInterval);
-        setIsSpinning(false);
-        throw deductError;
-      }
+      await handleBalanceUpdate(currentPlayer.id, -amount);
 
       // 2. Record in bank
       await supabase.from('bank').insert({
@@ -1049,19 +1050,14 @@ export default function Game() {
         setReels(finalReels);
         setIsSpinning(false);
 
-        const newBal = (balAtStart - amount) + prize;
-        
-        // Update Player
-        await supabase.from('players')
-          .update({ balance: newBal })
-          .eq('id', currentPlayer.id);
+        // Update Player via safe utility
+        await handleBalanceUpdate(currentPlayer.id, prize);
 
         // Update House (Terik) - House takes the net profit/loss
         const houseChange = amount - prize;
+        const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
         if (terik && houseChange !== 0) {
-          await supabase.from('players')
-            .update({ balance: terik.balance + houseChange })
-            .eq('id', terik.id);
+          await handleBalanceUpdate(terik.id, houseChange);
         }
 
         if (isWin) {
@@ -1092,41 +1088,63 @@ export default function Game() {
        setTimeout(() => setMoneyChanges(prev => prev.filter(m => m.id !== id)), 2000);
     }
 
-    const player = players.find(p => p.id === playerId);
-    if (!player) return;
-    
-    const newBalance = player.balance + delta;
-    
-    // Track negative balance for 24h automatic deletion
-    let negativeSince = player.negative_since;
-    if (newBalance < 0 && !negativeSince) {
-      negativeSince = new Date().toISOString();
-    } else if (newBalance >= 0) {
-      negativeSince = null;
-    }
+    try {
+      // RELIABILITY FIX: Fetch latest balance from DB before update to prevent overwriting other concurrent changes
+      const { data: latestPlayer, error: fetchError } = await supabase
+        .from('players')
+        .select('balance, negative_since')
+        .eq('id', playerId)
+        .single();
+      
+      if (fetchError || !latestPlayer) throw fetchError || new Error("Player not found");
+      
+      const newBalance = latestPlayer.balance + delta;
+      
+      // Track negative balance for 24h automatic deletion
+      let negativeSince = latestPlayer.negative_since;
+      if (newBalance < 0 && !negativeSince) {
+        negativeSince = new Date().toISOString();
+      } else if (newBalance >= 0) {
+        negativeSince = null;
+      }
 
-    await supabase.from('players').update({ 
-      balance: newBalance,
-      negative_since: negativeSince
-    }).eq('id', playerId);
+      const { error: updateError } = await supabase.from('players').update({ 
+        balance: newBalance,
+        negative_since: negativeSince
+      }).eq('id', playerId);
 
-    // NEW: Update Player Stock Price based on wealth movement
-    const playerStock = stocks.find(s => s.owner_id === playerId);
-    if (playerStock) {
-      const volatility = 0.001; // $1,000 change = 1% price change
-      const percentageChange = delta * volatility;
-      const newPrice = Math.max(1.0, playerStock.price * (1 + percentageChange));
-      const newHistory = [...(playerStock.history || []).slice(-29), { 
-        time: new Date().toLocaleTimeString(), 
-        price: Number(newPrice.toFixed(2)) 
-      }];
+      if (updateError) throw updateError;
 
-      await supabase.from('stocks').update({
-        price: Number(newPrice.toFixed(2)),
-        history: newHistory,
-        change: Number((percentageChange * 100).toFixed(2)),
-        updated_at: new Date().toISOString()
-      }).eq('symbol', playerStock.symbol);
+      // Update Player Stock Price based on wealth movement
+      const playerStock = stocks.find(s => s.owner_id === playerId);
+      if (playerStock) {
+        const volatility = 0.001; 
+        const percentageChange = delta * volatility;
+        const newPrice = Math.max(1.0, playerStock.price * (1 + percentageChange));
+        const newHistory = [...(playerStock.history || []).slice(-29), { 
+          time: new Date().toLocaleTimeString(), 
+          price: Number(newPrice.toFixed(2)) 
+        }];
+
+        await supabase.from('stocks').update({
+          price: Number(newPrice.toFixed(2)),
+          history: newHistory,
+          change: Number((percentageChange * 100).toFixed(2)),
+          updated_at: new Date().toISOString()
+        }).eq('symbol', playerStock.symbol);
+      }
+      
+      // Update local state if needed
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, balance: newBalance, negative_since: negativeSince } : p));
+      if (currentPlayer?.id === playerId) {
+        setCurrentPlayer(prev => prev ? { ...prev, balance: newBalance, negative_since: negativeSince } : null);
+      }
+    } catch (err) {
+      console.error("Balance update failed:", err);
+      // Fallback: Notify if it was a significant loss/gain
+      if (Math.abs(delta) > 500) {
+        addToast("Error al sincronizar dinero. Reintente.", "error");
+      }
     }
   };
 
@@ -1235,7 +1253,7 @@ export default function Game() {
 
   const completeJob = async () => {
     if (!currentPlayer) return;
-    const reward = 1000;
+    const reward = 250;
     
     // Mission progress
     setMissions(prev => prev.map(m => m.id === 1 ? { ...m, current: Math.min(m.goal, m.current + 10) } : m));
@@ -1550,7 +1568,7 @@ export default function Game() {
       
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
       if (terik) {
-        await supabase.from('players').update({ balance: (terik.balance || 0) + taxAmount }).eq('id', terik.id);
+        await handleBalanceUpdate(terik.id, taxAmount);
       }
       
       currentPlayer.last_tax_at = now.toISOString();
@@ -1580,7 +1598,7 @@ export default function Game() {
        
        const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
        if (terik) {
-         await supabase.from('players').update({ balance: terik.balance + taxAmount }).eq('id', terik.id);
+         await handleBalanceUpdate(terik.id, taxAmount);
          setLogs(prev => [`TAX OF $${taxAmount} PAID TO TERIK`, ...prev]);
        }
     }
@@ -1619,6 +1637,8 @@ export default function Game() {
           balance -= rent;
           setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
           
+          await handleBalanceUpdate(owner.id, rent);
+          
           // Visual feedback for rent
           const rentId = Math.random().toString();
           setMoneyChanges(prev => [...prev, { id: rentId, amount: -rent, x: window.innerWidth / 2, y: window.innerHeight / 2 - 100 }]);
@@ -1631,6 +1651,7 @@ export default function Game() {
           updateDebt(currentPlayer.id, loanDebt);
           setLogs(prev => [`FINANCED RENT: PAID $${downPayment} + $${loanDebt.toFixed(0)} DEBT TO ${owner.name.toUpperCase()}`, ...prev]);
           addToast(`Emergency Rent Loan: $${loanDebt.toFixed(0)} debt`, "error");
+          await handleBalanceUpdate(owner.id, rent);
         } else {
           // If totally broke, they just lose what they have and take the rest as debt
           const paid = Math.max(0, balance);
@@ -1639,12 +1660,8 @@ export default function Game() {
           balance = 0;
           updateDebt(currentPlayer.id, loanDebt);
           setLogs(prev => [`BANKRUPTCY AVOIDED: $${loanDebt.toFixed(0)} DEBT CREATED`, ...prev]);
+          await handleBalanceUpdate(owner.id, rent);
         }
-
-        await supabase
-          .from('players')
-          .update({ balance: owner.balance + rent })
-          .eq('id', owner.id);
       }
     }
 
@@ -1744,10 +1761,7 @@ export default function Game() {
       .eq('space_id', spaceId)
       .eq('game_id', gameId);
 
-    await supabase
-      .from('players')
-      .update({ balance: currentPlayer.balance - houseCost })
-      .eq('id', currentPlayer.id);
+    await handleBalanceUpdate(currentPlayer.id, -houseCost);
 
     setLogs(prev => [`Upgraded ${space.name} for $${houseCost}`, ...prev]);
   };
@@ -1758,10 +1772,10 @@ export default function Game() {
       return;
     }
 
-    const { error: senderErr } = await supabase.from('players').update({ balance: currentPlayer.balance - amount }).eq('id', currentPlayer.id);
+    await handleBalanceUpdate(currentPlayer.id, -amount);
     const target = players.find(p => p.id === toPlayerId);
     if (target) {
-      await supabase.from('players').update({ balance: target.balance + amount }).eq('id', toPlayerId);
+      await handleBalanceUpdate(toPlayerId, amount);
       
       // Notify recipient via messages table
       await supabase.from('messages').insert({
@@ -1772,10 +1786,8 @@ export default function Game() {
       });
     }
 
-    if (!senderErr) {
-      addToast(`Transferred $${amount} to ${target?.name}`, "success");
-      setLogs(prev => [`TRANSFERRED $${amount} TO ${target?.name.toUpperCase()}`, ...prev]);
-    }
+    addToast(`Transferred $${amount} to ${target?.name}`, "success");
+    setLogs(prev => [`TRANSFERRED $${amount} TO ${target?.name.toUpperCase()}`, ...prev]);
   };
 
   const sendMessage = async (e: React.FormEvent) => {
