@@ -35,7 +35,8 @@ import {
   Minus,
   Camera,
   Heart,
-  Trophy
+  Trophy,
+  Globe
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -118,6 +119,7 @@ interface Player {
   is_bankrupt?: boolean;
   debt_started_at?: string | null;
   negative_since?: string | null;
+  airplane_style?: string;
 }
 
 interface PropertyOwnership {
@@ -131,6 +133,112 @@ interface PropertyOwnership {
 const PLAYER_COLORS = [
   '#dc2626', '#2563eb', '#16a34a', '#d97706', '#7c3aed', '#db2777', '#0891b2'
 ];
+
+const AIRPLANE_STYLES = [
+  { id: 'default', name: 'Clásico', description: 'Color sólido estándar' },
+  { id: 'neon', name: 'Neón', description: 'Brillo multicolor' },
+  { id: 'realistic', name: 'Realista', description: 'Acabado metálico' },
+  { id: 'spiderman', name: 'Spider-Man', description: 'Estilo arácnido' },
+  { id: 'batman', name: 'Batman', description: 'Caballero de la noche' },
+  { id: 'superman', name: 'Superman', description: 'Hombre de acero' },
+  { id: 'custom_name', name: 'Nombre', description: 'Identificación única' },
+];
+
+const PlayerToken = ({ player, size = 'md', className }: { player: Player, size?: 'xs' | 'sm' | 'md' | 'lg', className?: string }) => {
+  const style = player.airplane_style || 'default';
+  const color = player.player_color;
+  
+  const sizeClasses = {
+    xs: "w-5 h-5",
+    sm: "w-7 h-7",
+    md: "w-12 h-12",
+    lg: "w-20 h-20"
+  };
+
+  const getStyleProps = () => {
+    switch (style) {
+      case 'neon':
+        return {
+          fill: 'url(#neonGradient)',
+          stroke: 'white',
+          strokeWidth: 2,
+          filter: 'drop-shadow(0 0 4px #fff) drop-shadow(0 0 8px #3b82f6)'
+        };
+      case 'realistic':
+        return {
+          fill: 'url(#metalGradient)',
+          stroke: '#444',
+          strokeWidth: 1,
+          filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))'
+        };
+      case 'spiderman':
+        return {
+          fill: '#ef4444',
+          stroke: '#1e40af',
+          strokeWidth: 3,
+          filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.4))'
+        };
+      case 'batman':
+        return {
+          fill: '#111',
+          stroke: '#facc15',
+          strokeWidth: 2,
+          filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.6))'
+        };
+      case 'superman':
+        return {
+          fill: '#2563eb',
+          stroke: '#dc2626',
+          strokeWidth: 3,
+          filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.4))'
+        };
+      default:
+        return {
+          fill: color,
+          stroke: 'white',
+          strokeWidth: 2,
+          filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))'
+        };
+    }
+  };
+
+  const props = getStyleProps();
+
+  return (
+    <div className={cn("relative flex items-center justify-center", sizeClasses[size], className)}>
+      <svg viewBox="0 0 24 24" className="w-full h-full overflow-visible">
+        <defs>
+          <linearGradient id="neonGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#3b82f6" />
+            <stop offset="50%" stopColor="#8b5cf6" />
+            <stop offset="100%" stopColor="#ec4899" />
+          </linearGradient>
+          <linearGradient id="metalGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#f8fafc" />
+            <stop offset="40%" stopColor="#94a3b8" />
+            <stop offset="60%" stopColor="#475569" />
+            <stop offset="100%" stopColor="#1e293b" />
+          </linearGradient>
+        </defs>
+        <Plane 
+          style={props as any} 
+          className="w-full h-full"
+        />
+        {style === 'custom_name' && (
+          <text 
+            x="12" 
+            y="26" 
+            textAnchor="middle" 
+            className="text-[4px] font-black fill-white stroke-black stroke-[0.2px]"
+            style={{ fontSize: '3px', fontWeight: 900 }}
+          >
+            {player.name.substring(0, 6)}
+          </text>
+        )}
+      </svg>
+    </div>
+  );
+};
 
 export default function Game() {
   const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
@@ -235,6 +343,44 @@ export default function Game() {
     reader.readAsDataURL(file);
   };
 
+  const updateAirplaneStyle = async (playerId: string, styleId: string) => {
+    const { error } = await supabase
+      .from('players')
+      .update({ airplane_style: styleId })
+      .eq('id', playerId);
+
+    if (error) {
+      addToast("Failed to update style", "error");
+    } else {
+      addToast(`¡Estilo applied!`, "success");
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, airplane_style: styleId } : p));
+      if (currentPlayer?.id === playerId) {
+        setCurrentPlayer(prev => prev ? { ...prev, airplane_style: styleId } : null);
+        const updatedProfile = players.find(p => p.id === playerId);
+        if (updatedProfile) setSelectedProfile({ ...updatedProfile, airplane_style: styleId } as Player);
+      }
+    }
+  };
+
+  const updatePlayerColor = async (playerId: string, color: string) => {
+    const { error } = await supabase
+      .from('players')
+      .update({ player_color: color })
+      .eq('id', playerId);
+
+    if (error) {
+      addToast("Failed to update color", "error");
+    } else {
+      addToast("¡Color actualizado!", "success");
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, player_color: color } : p));
+      if (currentPlayer?.id === playerId) {
+        setCurrentPlayer(prev => prev ? { ...prev, player_color: color } : null);
+        const updatedProfile = players.find(p => p.id === playerId);
+        if (updatedProfile) setSelectedProfile({ ...updatedProfile, player_color: color } as Player);
+      }
+    }
+  };
+
   const retryConnection = () => {
     missingTablesRef.current.clear();
     setMissingTables([]);
@@ -301,6 +447,7 @@ export default function Game() {
   };
 
   const fetchData = useCallback(async (gid: string) => {
+    setErrorMsg(null);
     try {
       const fetchSafely = async (tableName: string, query: any) => {
         if (missingTablesRef.current.has(tableName)) return null;
@@ -1471,6 +1618,12 @@ export default function Game() {
         if (canAfford) {
           balance -= rent;
           setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
+          
+          // Visual feedback for rent
+          const rentId = Math.random().toString();
+          setMoneyChanges(prev => [...prev, { id: rentId, amount: -rent, x: window.innerWidth / 2, y: window.innerHeight / 2 - 100 }]);
+          setTimeout(() => setMoneyChanges(prev => prev.filter(m => m.id !== rentId)), 2000);
+          
         } else if (canLoan) {
           const downPayment = rent * 0.5;
           const loanDebt = (rent * 0.5) * 1.25;
@@ -2057,15 +2210,10 @@ export default function Game() {
                                 </motion.div>
                               )}
                             </AnimatePresence>
-                            <Plane 
-                              className="w-7 h-7 md:w-12 md:h-12"
-                              style={{ 
-                                fill: p.player_color, 
-                                stroke: 'white', 
-                                strokeWidth: 2,
-                                filter: 'drop-shadow(0px 6px 12px rgba(0,0,0,0.5))'
-                              }} 
-                            />
+                             <PlayerToken 
+                               player={p}
+                               size={window.innerWidth < 768 ? 'sm' : 'md'}
+                             />
                             {/* Directional Indicator or Shadow */}
                             <motion.div 
                                initial={{ opacity: 0 }}
@@ -2654,78 +2802,117 @@ export default function Game() {
               )}
 
             {view === 'stats' && (
-               <div className="flex-1 flex flex-col gap-8">
-                  <div className="flex justify-between items-center">
-                    <h2 className="text-xl font-serif italic">Network Contacts</h2>
-                    <Users className="text-blue-600 w-5 h-5" />
-                  </div>
-                  {/* Pending Requests Section */}
-                  {friends.some(f => f.receiver_id === currentPlayer?.id && f.status === 'pending') && (
-                    <div className="space-y-4 mb-6">
-                      <div className="flex items-center justify-between px-1">
-                        <div className="text-[10px] uppercase tracking-widest font-black text-blue-600">Pending Signals</div>
-                        <span className="w-5 h-5 bg-blue-600 text-white rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">
-                          {friends.filter(f => f.receiver_id === currentPlayer?.id && f.status === 'pending').length}
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        {friends.filter(f => f.receiver_id === currentPlayer?.id && f.status === 'pending').map(req => {
-                          const sender = players.find(p => p.id === req.sender_id);
-                          return (
-                            <div key={req.id} className="bg-blue-50 border border-blue-100/50 p-4 rounded-3xl flex items-center justify-between group">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-sm shadow-md">
-                                  {sender?.name.charAt(0) || '?'}
+               <div className="flex-1 flex flex-col gap-6">
+                 <div className="flex justify-between items-center px-1">
+                   <div>
+                     <h2 className="text-2xl font-serif italic text-gray-900">Tycoon Hub</h2>
+                     <p className="text-[9px] font-black uppercase tracking-[0.3em] opacity-30 italic">Global Market Dashboard</p>
+                   </div>
+                   <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center">
+                     <TrendingUp className="text-blue-600 w-6 h-6" />
+                   </div>
+                 </div>
+
+                 {/* Top 3 Podium */}
+                 <div className="grid grid-cols-3 gap-2 items-end h-44 mb-4 bg-gray-50/50 p-6 rounded-[2.5rem] border border-black/[0.02]">
+                    {[...players]
+                      .sort((a,b) => {
+                        const valA = a.balance + (properties.filter(pr => pr.owner_id === a.id).length * 1000);
+                        const valB = b.balance + (properties.filter(pr => pr.owner_id === b.id).length * 1000);
+                        return valB - valA;
+                      })
+                      .slice(0, 3).map((p, i) => {
+                        const sorted = [...players].sort((a,b) => {
+                           const vA = a.balance + (properties.filter(pr => pr.owner_id === a.id).length * 1000);
+                           const vB = b.balance + (properties.filter(pr => pr.owner_id === b.id).length * 1000);
+                           return vB - vA;
+                        });
+                        const rankPositions = [1, 0, 2]; // 2nd, 1st, 3rd visually
+                        const pIdx = rankPositions[i];
+                        const player = sorted[pIdx];
+                        if (!player) return <div key={i} />;
+                        
+                        const isGold = pIdx === 0;
+                        const isSilver = pIdx === 1;
+                        
+                        return (
+                          <div key={pIdx} className="flex flex-col items-center gap-2 h-full justify-end">
+                             <div className="relative">
+                               <div className={cn(
+                                 "w-12 h-12 rounded-2xl flex items-center justify-center font-black text-white shadow-xl overflow-hidden border-2 border-white",
+                                 isGold ? "w-16 h-16 bg-amber-400 -translate-y-4" : isSilver ? "bg-slate-300" : "bg-orange-400"
+                               )} style={{ backgroundColor: isGold ? undefined : player.player_color }}>
+                                 {player.avatar_url ? <img src={player.avatar_url} className="w-full h-full object-cover" /> : player.name[0]}
+                                 {isGold && <Trophy className="absolute -top-3 -right-3 w-8 h-8 text-amber-500 drop-shadow-lg" />}
+                               </div>
+                               <div className="absolute -bottom-2 left-1/2 -ms-x-1/2 -translate-x-1/2 bg-black text-white text-[8px] font-black px-2 py-0.5 rounded-full z-10">#{pIdx+1}</div>
+                             </div>
+                             <span className="text-[9px] font-black uppercase truncate w-full text-center max-w-[60px]">{player.name}</span>
+                          </div>
+                        );
+                    })}
+                 </div>
+
+                 {/* List of Players */}
+                 <div className="space-y-3 flex-1">
+                    {[...players]
+                      .sort((a,b) => {
+                        const valA = a.balance + (properties.filter(pr => pr.owner_id === a.id).length * 1000);
+                        const valB = b.balance + (properties.filter(pr => pr.owner_id === b.id).length * 1000);
+                        return valB - valA;
+                      })
+                      .map((p, idx) => {
+                        const netWorth = p.balance + (properties.filter(pr => pr.owner_id === p.id).length * 1000);
+                        const isMe = p.id === currentPlayer?.id;
+                        
+                        return (
+                          <motion.div 
+                            key={p.id}
+                            initial={{ x: -20, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            transition={{ delay: idx * 0.05 }}
+                            onClick={() => setSelectedProfile(p)}
+                            className={cn(
+                              "p-4 rounded-3xl flex items-center justify-between cursor-pointer border transition-all active:scale-[0.98]",
+                              isMe ? "bg-blue-600 border-blue-700 text-white shadow-xl" : "bg-white border-black/[0.03] hover:border-blue-200"
+                            )}
+                          >
+                            <div className="flex items-center gap-4">
+                              <span className={cn("text-[9px] font-mono opacity-40 w-4", isMe && "text-white opacity-60")}>{(idx + 1).toString().padStart(2, '0')}</span>
+                              <PlayerToken player={p} size="sm" />
+                              <div>
+                                <div className={cn("text-[11px] font-black uppercase flex items-center gap-1.5", isMe ? "text-white" : "text-gray-900")}>
+                                  {p.name}
+                                  <span className={cn(
+                                    "px-1.5 py-0.5 rounded-full text-[6px] font-black uppercase tracking-widest border",
+                                    p.balance >= 250000 ? "bg-amber-100 border-amber-200 text-amber-700" :
+                                    p.balance >= 50000 ? "bg-purple-100 border-purple-200 text-purple-700" :
+                                    p.balance >= 10000 ? "bg-blue-100 border-blue-200 text-blue-700" :
+                                    "bg-gray-100 border-gray-200 text-gray-700",
+                                    isMe && "bg-white/20 border-white/30 text-white"
+                                  )}>
+                                    {p.balance >= 250000 ? 'Rey Tycoon' : 
+                                     p.balance >= 50000 ? 'Magnate' : 
+                                     p.balance >= 10000 ? 'Capitalista' : 
+                                     'Inversor'}
+                                  </span>
+                                  {isFriend(p.id) && <Heart className="w-2.5 h-2.5 text-rose-500 fill-rose-500" />}
                                 </div>
-                                <div>
-                                  <div className="text-[11px] font-black uppercase text-blue-900 leading-none mb-1">{sender?.name || 'Unknown'}</div>
-                                  <div className="text-[8px] font-mono text-blue-400 uppercase tracking-tighter">Connection Requested</div>
+                                <div className={cn("text-[8px] font-mono opacity-40 uppercase tracking-tighter", isMe && "text-white/60")}>
+                                  ${p.balance.toLocaleString()} Liq.
                                 </div>
                               </div>
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  acceptFriendRequest(req.id);
-                                }}
-                                className="px-5 py-2.5 bg-black text-white text-[9px] font-black uppercase tracking-widest rounded-xl hover:bg-blue-600 transition-all shadow-sm"
-                              >
-                                Accept
-                              </button>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="text-[10px] uppercase tracking-widest font-black opacity-20 px-1 mb-4 flex items-center gap-2">
-                    <span className="w-8 h-px bg-black opacity-10" />
-                    Directory
-                    <span className="flex-1 h-px bg-black opacity-10" />
-                  </div>
-                  <div className="space-y-4">
-                    {players.map(p => (
-                      <div key={p.id} onClick={() => setSelectedProfile(p)} className="p-4 rounded-2xl flex items-center justify-between cursor-pointer border transition-all bg-white border-black/[0.03] hover:border-blue-200">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl overflow-hidden relative" style={{ backgroundColor: p.player_color + '22', color: p.player_color }}>
-                             <div className="w-full h-full flex items-center justify-center font-mono font-black">
-                                {p.avatar_url ? (
-                                  <img src={p.avatar_url} className="w-full h-full object-cover" alt={p.name} referrerPolicy="no-referrer" />
-                                ) : (
-                                  p.name.charAt(0)
-                                )}
-                             </div>
-                          </div>
-                          <div>
-                            <div className="text-[11px] font-black uppercase flex items-center gap-1.5 text-gray-900">
-                              {p.name}
+                            <div className="text-right">
+                              <div className={cn("text-[12px] font-mono font-black", isMe ? "text-white" : "text-gray-900")}>
+                                ${netWorth.toLocaleString()}
+                              </div>
+                              <div className={cn("text-[7px] uppercase font-black tracking-widest opacity-30", isMe && "text-white/40")}>Net Worth</div>
                             </div>
-                            <div className="text-[9px] font-mono opacity-40">${p.balance.toLocaleString()}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                          </motion.div>
+                        );
+                    })}
+                 </div>
                </div>
             )}
 
@@ -2810,6 +2997,7 @@ ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS last_tax_at TIMESTAMPTZ DEFAULT NULL;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS last_job_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS airplane_style TEXT DEFAULT 'default';
 
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_mortgaged BOOLEAN DEFAULT FALSE;
 
@@ -3061,7 +3249,21 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                 <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">
                   {selectedProfile.name}
                 </h2>
-                <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-1">Tycoon Operator</span>
+                <div className="flex items-center gap-2 mt-1">
+                  <div className={cn(
+                    "px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border",
+                    selectedProfile.balance >= 250000 ? "bg-amber-100 border-amber-200 text-amber-700" :
+                    selectedProfile.balance >= 50000 ? "bg-purple-100 border-purple-200 text-purple-700" :
+                    selectedProfile.balance >= 10000 ? "bg-blue-100 border-blue-200 text-blue-700" :
+                    "bg-gray-100 border-gray-200 text-gray-700"
+                  )}>
+                    {selectedProfile.balance >= 250000 ? 'Rey Tycoon' : 
+                     selectedProfile.balance >= 50000 ? 'Magnate' : 
+                     selectedProfile.balance >= 10000 ? 'Capitalista' : 
+                     'Inversor'}
+                  </div>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-2">Tycoon Operator</span>
 
                 <div className="grid grid-cols-2 gap-4 w-full mt-10">
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
@@ -3083,6 +3285,60 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                     </span>
                   </div>
                 </div>
+
+                {currentPlayer?.id === selectedProfile.id && (
+                  <div className="w-full mt-8 space-y-4">
+                    <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Personaliza tu Avión</div>
+                    
+                    {/* Color Picker */}
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03]">
+                      <div className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-4">Colores del Fuselaje</div>
+                      <div className="flex flex-wrap gap-2">
+                        {PLAYER_COLORS.map(color => (
+                          <button
+                            key={color}
+                            onClick={() => updatePlayerColor(currentPlayer.id, color)}
+                            className={cn(
+                              "w-8 h-8 rounded-full border-2 transition-all transform hover:scale-110",
+                              selectedProfile.player_color === color ? "border-black scale-110" : "border-transparent"
+                            )}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Style Picker */}
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03]">
+                      <div className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-4">Estilos Especiales</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {AIRPLANE_STYLES.map(style => (
+                          <button
+                            key={style.id}
+                            onClick={() => updateAirplaneStyle(currentPlayer.id, style.id)}
+                            className={cn(
+                              "p-3 rounded-2xl border transition-all text-left flex items-center gap-3",
+                              selectedProfile.airplane_style === style.id || (!selectedProfile.airplane_style && style.id === 'default')
+                                ? "bg-black text-white border-black" 
+                                : "bg-white border-black/5 hover:border-black/20"
+                            )}
+                          >
+                            <PlayerToken 
+                              player={{ ...selectedProfile, airplane_style: style.id }} 
+                              size="xs" 
+                            />
+                            <div>
+                              <div className="text-[9px] font-black uppercase leading-none mb-1">{style.name}</div>
+                              <div className={cn("text-[6px] uppercase tracking-wider opacity-60", selectedProfile.airplane_style === style.id ? "text-white" : "text-gray-500")}>
+                                {style.description}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="w-full mt-8 space-y-4">
                   <div className="text-[10px] font-black uppercase tracking-widest opacity-20 ml-2">Portfolio Details</div>
@@ -3425,6 +3681,16 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
           Recent Events
         </div>
         <div className="flex items-center space-x-16 text-[10px] opacity-40 animate-marquee whitespace-nowrap font-mono uppercase tracking-tighter">
+          {/* Market Stats */}
+          <span className="flex items-center gap-2 text-blue-600 font-bold">
+            <TrendingUp className="w-3 h-3" />
+            TOP TYCOON: {players.sort((a,b) => b.balance - a.balance)[0]?.name || 'N/A'}
+          </span>
+          <span className="flex items-center gap-2 text-emerald-600 font-bold">
+            <Globe className="w-3 h-3" />
+            MARKET HOT: {stocks[Math.floor(Math.random() * stocks.length)]?.symbol || 'METRO'} +{Math.floor(Math.random() * 15)}%
+          </span>
+          
           {logs.length > 0 ? (
             <>
               {logs.map((log, i) => <span key={`log-${i}`} className="flex items-center gap-2"><span className="text-blue-600 font-black">#</span> {log}</span>)}
