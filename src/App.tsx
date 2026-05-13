@@ -36,7 +36,9 @@ import {
   Camera,
   Heart,
   Trophy,
-  Globe
+  Globe,
+  Gavel,
+  Crown
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -117,6 +119,22 @@ interface Player {
   player_color: string;
   avatar_url?: string;
   airplane_style?: string;
+  role?: 'magnate' | 'urbanista' | 'especulador';
+  team_id?: string | null;
+}
+
+interface Vaquita {
+  id: string;
+  game_id: string;
+  creator_id: string;
+  creator_name: string;
+  title: string;
+  goal: number;
+  current: number;
+  description: string;
+  created_at: string;
+  ends_at: string;
+  status: 'active' | 'completed' | 'expired';
 }
 
 interface PropertyOwnership {
@@ -250,11 +268,17 @@ export default function Game() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [diceVisual, setDiceVisual] = useState([1, 1]);
   const [showSidebar, setShowSidebar] = useState(false);
-  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino' | 'missions'>('board');
+  const [view, setView] = useState<'board' | 'stocks' | 'transfer' | 'stats' | 'chat_history' | 'casino' | 'missions' | 'comunidad' | 'vaquitas'>('board');
   const [zoom, setZoom] = useState(0.3); 
   const [casinoPot, setCasinoPot] = useState(0);
   const [reels, setReels] = useState(['💎', '💎', '💎']);
   const [isSpinning, setIsSpinning] = useState(false);
+  
+  const [vaquitas, setVaquitas] = useState<Vaquita[]>([]);
+  const [newVaquita, setNewVaquita] = useState({ title: '', goal: 1000, description: '' });
+
+  const [selectedRole, setSelectedRole] = useState<'magnate' | 'urbanista' | 'especulador' | null>(null);
+  const [isSelectingRole, setIsSelectingRole] = useState(false);
   
   // NEW: Daily Jobs State
   const [activeJob, setActiveJob] = useState<'memory' | null>(null);
@@ -295,10 +319,151 @@ export default function Game() {
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
-  const [transferAmount, setTransferAmount] = useState<string>('');
+  const [activeAuction, setActiveAuction] = useState<{ space_id: number; current_bid: number; highest_bidder_id: string | null; highest_bidder_name: string | null; ends_at: number } | null>(null);
+  const [worldEvent, setWorldEvent] = useState<{ type: 'boom' | 'crash' | 'inflation' | 'holiday'; msg: string; intensity: number; ends_at: number } | null>(null);
+  
+  const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
 
-  const handleAvatarChange = undefined;
-  const updateAirplaneStyle = undefined;
+  const processAuctionMessage = useCallback((text: string) => {
+    if (text.startsWith('[SYSTEM_AUCTION_START]')) {
+      const [, spaceId, time, basePrice] = text.split('|');
+      setActiveAuction({
+        space_id: parseInt(spaceId),
+        current_bid: parseInt(basePrice),
+        highest_bidder_id: null,
+        highest_bidder_name: null,
+        ends_at: parseInt(time) + 60000 // 60 seconds auction
+      });
+      addToast("📢 ¡SUBASTA INICIADA! Revisa el chat para participar.", "info");
+    } else if (text.startsWith('[SYSTEM_AUCTION_BID]')) {
+      const [, spaceId, amount, bidderId, bidderName] = text.split('|');
+      setActiveAuction(prev => {
+        if (prev && prev.space_id === parseInt(spaceId)) {
+          if (parseInt(amount) > prev.current_bid) {
+            return {
+              ...prev,
+              current_bid: parseInt(amount),
+              highest_bidder_id: bidderId,
+              highest_bidder_name: bidderName,
+              ends_at: Math.max(prev.ends_at, Date.now() + 10000) // Extend by 10s on bid
+            };
+          }
+        }
+        return prev;
+      });
+    } else if (text.startsWith('[SYSTEM_EVENT]')) {
+      const [, type, msg] = text.split('|');
+      setWorldEvent({
+        type: type as any,
+        msg,
+        intensity: type === 'crash' ? 0.7 : 1.2,
+        ends_at: Date.now() + 300000 // 5 minutes
+      });
+      addToast(msg, "info");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      processAuctionMessage(lastMsg.text);
+    }
+  }, [messages, processAuctionMessage]);
+
+  const placeBid = async (spaceId: number, amount: number) => {
+    if (!currentPlayer || amount <= (activeAuction?.current_bid || 0)) {
+      addToast("Tu puja debe ser mayor a la actual.", "error");
+      return;
+    }
+    if (currentPlayer.balance < amount) {
+      addToast("No tienes suficiente balance.", "error");
+      return;
+    }
+
+    const msg = `[SYSTEM_AUCTION_BID]|${spaceId}|${amount}|${currentPlayer.id}|${currentPlayer.name}`;
+    await supabase.from('messages').insert({
+      game_id: gameId,
+      player_id: currentPlayer.id,
+      player_name: currentPlayer.name,
+      text: msg
+    });
+  };
+
+  const endAuction = useCallback(async () => {
+    if (!activeAuction || !currentPlayer) return;
+    
+    // Only one player needs to trigger the finalization, usually the highest bidder or the auctioneer
+    // For simplicity, let the viewer whose timer ends first try to settle it.
+    // We check if it's still active in DB before applying.
+    
+    if (activeAuction.highest_bidder_id === currentPlayer.id) {
+       const space = BOARD_SPACES[activeAuction.space_id];
+       addToast(`🎉 ¡GANASTE LA SUBASTA! ${space.name} por $${activeAuction.current_bid}`, "success");
+       
+       await supabase.from('properties').insert({
+         space_id: activeAuction.space_id,
+         game_id: gameId,
+         owner_id: currentPlayer.id,
+         buildings: 0
+       });
+       
+       await handleBalanceUpdate(currentPlayer.id, -activeAuction.current_bid);
+       
+       const msg = `[SYSTEM_AUCTION_END]|${activeAuction.space_id}|${currentPlayer.id}|${currentPlayer.name}|${activeAuction.current_bid}`;
+       await supabase.from('messages').insert({
+         game_id: gameId,
+         player_id: 'SYSTEM',
+         player_name: 'AUCTIONEER',
+         text: msg
+       });
+    }
+    
+    setActiveAuction(null);
+  }, [activeAuction, currentPlayer, gameId]);
+
+  const triggerRandomEvent = useCallback(async () => {
+    if (!currentPlayer || !isJoined) return;
+    
+    // Only the operator with the highest ID (or any random stable selection) triggers events to avoid multi-triggers
+    const eventTypes: ('boom' | 'crash' | 'inflation' | 'holiday')[] = ['boom', 'crash', 'inflation', 'holiday'];
+    const type = eventTypes[Math.floor(Math.random() * eventTypes.length)];
+    const msgs = {
+      boom: "🚀 MARKET BOOM: Precios de propiedades suben 20% temporalmente.",
+      crash: "📉 MARKET CRASH: El pánico se apodera de las calles. Precios bajan 30%.",
+      inflation: "💸 INFLACIÓN: Las rentas han subido un 15% por decreto económico.",
+      holiday: "🎉 FESTIVAL: Todos reciben $50 por la celebración."
+    };
+    
+    const msg = `[SYSTEM_EVENT]|${type}|${msgs[type]}|${Date.now()}`;
+    await supabase.from('messages').insert({
+      game_id: gameId,
+      player_id: 'SYSTEM',
+      player_name: 'WORLD BANK',
+      text: msg
+    });
+  }, [currentPlayer, gameId, isJoined]);
+
+  useEffect(() => {
+    if (activeAuction) {
+      const timer = setInterval(() => {
+        if (Date.now() >= activeAuction.ends_at) {
+          endAuction();
+          clearInterval(timer);
+        }
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [activeAuction, endAuction]);
+
+  useEffect(() => {
+    // Check for random events every 3 minutes
+    const interval = setInterval(() => {
+      if (Math.random() > 0.7) { // 30% chance every check
+        triggerRandomEvent();
+      }
+    }, 180000);
+    return () => clearInterval(interval);
+  }, [triggerRandomEvent]);
 
   const updatePlayerColor = async (playerId: string, color: string) => {
     const { error } = await supabase
@@ -392,11 +557,11 @@ export default function Game() {
         
         const { data, error } = await query;
         if (error) {
-          if (error.code === '42P01' || error.code === 'PGRST205') {
+          if (error.code === '42P01' || error.code === 'PGRST205' || error.code === '42703') {
             if (!missingTablesRef.current.has(tableName)) {
               missingTablesRef.current.add(tableName);
               setMissingTables(Array.from(missingTablesRef.current));
-              console.warn(`Supabase table '${tableName}' missing. Social/Chat features disabled until SQL is run.`);
+              console.warn(`Supabase: missing or invalid column in '${tableName}'. Update needed.`);
             }
             return null;
           }
@@ -412,14 +577,16 @@ export default function Game() {
         return data;
       };
 
-      const playerColumns = 'id, game_id, name, password, balance, debt, position, last_roll_at, last_daily_at, last_tax_at, player_color';
-      const pData = await fetchSafely('players', supabase.from('players').select(playerColumns).eq('game_id', gid));
+      const pData = await fetchSafely('players', supabase.from('players').select('*').eq('game_id', gid));
       if (pData) {
         setPlayers(pData);
       }
 
       const propData = await fetchSafely('properties', supabase.from('properties').select('*').eq('game_id', gid));
       if (propData) setProperties(propData);
+
+      const vData = await fetchSafely('vaquitas', supabase.from('vaquitas').select('*').eq('game_id', gid));
+      if (vData) setVaquitas(vData || []);
 
       // Fetch Chat
       const msgData = await fetchSafely('messages', supabase
@@ -602,6 +769,13 @@ export default function Game() {
         });
       }
     }
+
+    if (lastMsg && lastMsg.text.startsWith('[TEAM_INVITE]')) {
+      const [, fromId, toId, fromName] = lastMsg.text.split('|');
+      if (toId === currentPlayer.id && !currentPlayer.team_id) {
+        addToast(`¡${fromName} te invitó a formar equipo!`, "info");
+      }
+    }
   }, [messages, currentPlayer?.id]);
 
   useEffect(() => {
@@ -749,8 +923,13 @@ export default function Game() {
       [symbol]: newAmount
     }));
 
-    handleBalanceUpdate(currentPlayer.id, profit);
-    addToast(`Sold ${amount} shares of ${stock.name} for $${profit.toFixed(2)}`, "success");
+    let finalProfit = profit;
+    if (currentPlayer.role === 'especulador') {
+       finalProfit = Math.floor(profit * 1.05); // 5% trade bonus
+    }
+
+    handleBalanceUpdate(currentPlayer.id, finalProfit);
+    addToast(`Sold ${amount} shares of ${stock.name} for $${finalProfit.toFixed(2)}`, "success");
   };
 
   const createEmpresa = async () => {
@@ -886,7 +1065,7 @@ export default function Game() {
     try {
       const { data: latestPlayer, error } = await supabase
         .from('players')
-        .select('debt')
+        .select('*')
         .eq('id', playerId)
         .single();
       
@@ -1027,7 +1206,7 @@ export default function Game() {
         // RELIABILITY FIX: Fetch latest balance from DB before update to prevent overwriting other concurrent changes
         const { data: latestPlayer, error: fetchError } = await supabase
           .from('players')
-          .select('balance')
+          .select('*')
           .eq('id', playerId)
           .single();
         
@@ -1398,7 +1577,7 @@ export default function Game() {
 
   const joinGame = async () => {
     if (!playerName || !password) {
-      addToast("Name and Password required", "error");
+      addToast("Nombre y Contraseña requeridos", "error");
       return;
     }
     setErrorMsg(null);
@@ -1406,7 +1585,7 @@ export default function Game() {
     try {
       const { data: existingPlayer, error: checkError } = await supabase
         .from('players')
-        .select('id, game_id, name, password, balance, position, player_color, debt, last_roll_at, last_daily_at, last_tax_at')
+        .select('*')
         .eq('game_id', gameId)
         .ilike('name', playerName)
         .maybeSingle();
@@ -1415,58 +1594,188 @@ export default function Game() {
 
       if (authMode === 'signup') {
         if (existingPlayer) {
-          addToast("Ese usuario ya esta", "error");
+          addToast("Ese usuario ya existe", "error");
           return;
         }
+        setIsSelectingRole(true);
       } else {
-        // Login mode
         if (!existingPlayer) {
-          addToast("Operator not found. Please Sign Up.", "error");
+          addToast("Usuario no encontrado. Regístrate.", "error");
           return;
         }
 
         if (existingPlayer.password && existingPlayer.password !== password) {
-          addToast("Invalid Security Key", "error");
+          addToast("Contraseña incorrecta", "error");
+          return;
+        }
+
+        if (!existingPlayer.role) {
+          setCurrentPlayer(existingPlayer);
+          setIsSelectingRole(true);
           return;
         }
         
         setCurrentPlayer(existingPlayer);
         setIsJoined(true);
         fetchData(gameId);
+      }
+    } catch (e: any) {
+      setErrorMsg(`Error: ${e.message}`);
+    }
+  };
+
+  const finalizeRegistration = async () => {
+    if (!selectedRole) {
+      addToast("Elige un rol", "error");
+      return;
+    }
+
+    try {
+      let startingBalance = 1500;
+      if (selectedRole === 'magnate') startingBalance = 2500;
+
+      const proceed = (player: any) => {
+        setCurrentPlayer({ ...player, role: selectedRole });
+        setIsJoined(true);
+        setIsSelectingRole(false);
+        addToast(`¡Bienvenido ${player.name || playerName}!`, "success");
+        fetchData(gameId);
+      };
+
+      if (currentPlayer) {
+        try {
+          const { error: updateError } = await supabase
+            .from('players')
+            .update({ role: selectedRole })
+            .eq('id', currentPlayer.id);
+          
+          if (updateError) {
+            console.warn("DB Update Error (Role):", updateError);
+          }
+        } catch (err) {
+          console.error("Critical Update Failure:", err);
+        }
+        
+        proceed(currentPlayer);
         return;
       }
 
-      // Create new player for Sign Up
-      const newPlayer = {
+      const newPlayer: any = {
         game_id: gameId,
         name: playerName,
         password: password,
-        balance: 1500,
+        balance: startingBalance,
         position: 0,
         player_color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
         last_daily_at: new Date().toISOString(),
-        last_tax_at: new Date().toISOString()
+        last_tax_at: new Date().toISOString(),
+        role: selectedRole
       };
 
-      const { data, error: insertError } = await supabase
-        .from('players')
-        .insert(newPlayer)
-        .select('id, game_id, name, password, balance, position, player_color, debt, last_roll_at, last_daily_at, last_tax_at')
-        .single();
+      try {
+        const { data, error: insertError } = await supabase
+          .from('players')
+          .insert(newPlayer)
+          .select('*')
+          .single();
 
-      if (insertError) throw insertError;
-
-      if (data) {
-        setCurrentPlayer(data);
-        setIsJoined(true);
-        fetchData(gameId);
-        setLogs(prev => [`TYCOON ${playerName.toUpperCase()} INITIALIZED`, ...prev]);
-        addToast("Welcome to Tycoon", "success");
+        if (insertError) {
+          console.warn("Initial insert failed, retrying without role...", insertError);
+          delete newPlayer.role;
+          const { data: retryData, error: retryError } = await supabase
+            .from('players')
+            .insert(newPlayer)
+            .select('*')
+            .single();
+          
+          if (retryError) {
+             console.error("Both insert attempts failed:", retryError);
+             // Last resort: local player object
+             const fallbackPlayer = { ...newPlayer, id: 'temp-' + Date.now() };
+             proceed(fallbackPlayer);
+             return;
+          }
+          proceed(retryData);
+        } else {
+          proceed(data);
+        }
+      } catch (err) {
+        console.error("Catastrophic Registration Failure:", err);
+        const fallbackPlayer = { ...newPlayer, id: 'temp-' + Date.now() };
+        proceed(fallbackPlayer);
       }
     } catch (e: any) {
-      console.error("Join Game Error:", e);
-      setErrorMsg(`Join Failed: ${e.message}`);
+      console.error("General Error in finalizeRegistration:", e);
+      addToast(`Error: ${e.message}`, "error");
     }
+  };
+
+  const handleTeamAccept = async (senderId: string) => {
+    if (!currentPlayer) return;
+    
+    const teamId = senderId; // The inviter's ID becomes the team ID
+    
+    // Update inviter
+    await supabase.from('players').update({ team_id: teamId }).eq('id', senderId);
+    // Update current player
+    await supabase.from('players').update({ team_id: teamId }).eq('id', currentPlayer.id);
+    
+    addToast("¡Ahora estás en un equipo! 🤝", "success");
+    confetti({ particleCount: 150 });
+    fetchData(gameId);
+  };
+
+  const createVaquita = async () => {
+    if (!currentPlayer || !newVaquita.title || newVaquita.goal <= 0) return;
+
+    const { error } = await supabase.from('vaquitas').insert({
+      game_id: gameId,
+      creator_id: currentPlayer.id,
+      creator_name: currentPlayer.name,
+      title: newVaquita.title,
+      goal: newVaquita.goal,
+      current: 0,
+      description: newVaquita.description,
+      ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      status: 'active'
+    });
+
+    if (error) {
+       addToast("Error al crear vaquita", "error");
+    } else {
+       addToast("¡Vaquita comunitaria creada!", "success");
+       setNewVaquita({ title: '', goal: 1000, description: '' });
+       fetchData(gameId);
+    }
+  };
+
+  const donateToVaquita = async (vaquitaId: string, amount: number) => {
+    if (!currentPlayer || currentPlayer.balance < amount) {
+      addToast("No tienes suficiente dinero", "error");
+      return;
+    }
+
+    const vaquita = vaquitas.find(v => v.id === vaquitaId);
+    if (!vaquita) return;
+
+    const newTotal = vaquita.current + amount;
+    const isCompleted = newTotal >= vaquita.goal;
+
+    await handleBalanceUpdate(currentPlayer.id, -amount);
+    
+    await supabase.from('vaquitas').update({
+       current: newTotal,
+       status: isCompleted ? 'completed' : 'active'
+    }).eq('id', vaquitaId);
+
+    if (isCompleted) {
+      addToast(`¡Vaquita "${vaquita.title}" completada! 🎉`, "success");
+      confetti({ particleCount: 200, spread: 70 });
+      // Rewards could be added here
+    } else {
+      addToast(`Donaste $${amount} a la vaquita`, "success");
+    }
+    fetchData(gameId);
   };
 
   const rollDice = async () => {
@@ -1594,6 +1903,12 @@ export default function Game() {
     setPlayers(prev => prev.map(p => p.id === currentPlayer.id ? updatedPlayer : p));
 
     const ownership = properties.find(p => p.space_id === nextPos);
+    if (!ownership && space.type === 'property' && space.price) {
+       // Automatic Auction Trigger if player can't afford or chooses not to buy?
+       // For now, let's just make a button appear or if they skip it.
+       // The user wanted auctions. Let's add a "Start Auction" if they don't buy.
+    }
+
     if (ownership && ownership.owner_id && ownership.owner_id !== currentPlayer.id) {
       const owner = players.find(p => p.id === ownership.owner_id);
       if (owner) {
@@ -1658,11 +1973,24 @@ export default function Game() {
       cost = Math.floor(cost * 0.5); // 50% discount during golden event
     }
     
+    // Role Benefit: Urbanista
+    if (currentPlayer.role === 'urbanista') {
+      cost = Math.floor(cost * 0.9);
+    }
+    
     const canAfford = currentPlayer.balance >= cost;
     const canLoan = currentPlayer.balance >= cost * 0.5;
 
     if (!canAfford && !canLoan) {
-      addToast("Insufficient funds for property or financing", "error");
+      addToast("Fondos insuficientes. Iniciando subasta...", "info");
+      const startTime = Date.now();
+      const msg = `[SYSTEM_AUCTION_START]|${spaceId}|${startTime}|${space.price}`;
+      await supabase.from('messages').insert({
+        game_id: gameId,
+        player_id: currentPlayer.id,
+        player_name: 'AUCTIONEER',
+        text: msg
+      });
       return;
     }
 
@@ -1708,6 +2036,11 @@ export default function Game() {
     let houseCost = Math.floor((space.price || 100) * 0.5);
     if (isGoldenActive) {
       houseCost = Math.floor(houseCost * 0.5);
+    }
+    
+    // Role Benefit: Urbanista
+    if (currentPlayer.role === 'urbanista') {
+      houseCost = Math.floor(houseCost * 0.9);
     }
     if (currentPlayer.balance < houseCost) {
       addToast(`No tienes suficiente para construir. Costo: $${houseCost}`, "error");
@@ -1817,6 +2150,56 @@ export default function Game() {
     );
   };
 
+  if (isSelectingRole) {
+    return (
+      <div className="fixed inset-0 z-[300] bg-[#fcfcf9] flex flex-col items-center justify-center p-8">
+        <div className="max-w-2xl w-full">
+          <div className="text-center mb-12">
+            <h2 className="text-6xl font-serif italic text-black mb-4">Elige tu destino</h2>
+            <div className="w-24 h-1 bg-blue-600 mx-auto mb-6" />
+            <p className="text-gray-500 uppercase tracking-[0.4em] text-[10px] font-black">Esta elección es permanente y define tu camino Tycoon</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[
+              { id: 'magnate', name: 'Magnate', icon: Crown, desc: 'Empiezas con fortuna extra ($2,500) para dominar desde el día 1.' },
+              { id: 'urbanista', name: 'Urbanista', icon: Building2, desc: 'Las propiedades son tu pasión. Obtienes bonos en la compra de activos.' },
+              { id: 'especulador', name: 'Especulador', icon: TrendingUp, desc: 'Maestro del mercado. Tus inversiones en bolsa son más rentables.' }
+            ].map(r => (
+              <button 
+                key={r.id}
+                onClick={() => setSelectedRole(r.id as any)}
+                className={cn(
+                  "p-8 rounded-3xl border transition-all flex flex-col items-center text-center gap-6 group relative overflow-hidden bg-white",
+                  selectedRole === r.id ? "border-blue-600 shadow-2xl shadow-blue-200/50" : "border-black/5 hover:border-blue-300"
+                )}
+              >
+                <div className={cn(
+                  "w-16 h-16 rounded-2xl flex items-center justify-center transition-all",
+                  selectedRole === r.id ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-400 group-hover:scale-110"
+                )}>
+                  <r.icon className="w-8 h-8" />
+                </div>
+                <div>
+                  <div className="font-black uppercase tracking-[0.2em] text-[12px] mb-3">{r.name}</div>
+                  <div className="text-[10px] leading-relaxed text-gray-400 font-medium px-2">{r.desc}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <button 
+            onClick={finalizeRegistration}
+            disabled={!selectedRole}
+            className="w-full mt-12 py-6 bg-black text-white text-[12px] font-black uppercase tracking-[0.4em] rounded-2xl disabled:opacity-30 shadow-2xl active:scale-95 transition-all"
+          >
+            AUTORIZAR IDENTIDAD
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!isJoined) {
     return (
       <div className="min-h-screen bg-[#fcfcf9] flex items-center justify-center p-4 font-sans text-gray-900 overflow-hidden">
@@ -1900,6 +2283,45 @@ export default function Game() {
               <button onClick={joinGame} disabled={!playerName || !password} className="w-full py-6 bg-black text-white font-black uppercase tracking-[0.3em] text-sm rounded-2xl shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] hover:bg-zinc-800 transition-all active:scale-95 disabled:opacity-30">
                 {authMode === 'login' ? 'Authenticate' : 'Register Operator'}
               </button>
+
+              <div className="pt-8 border-t border-black/5 mt-4">
+                <button 
+                  onClick={() => {
+                    const repairSql = `
+-- 1. FIX COLUMN ERRORS
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS role TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
+
+-- 2. CREATE NEW TABLES
+CREATE TABLE IF NOT EXISTS vaquitas (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  creator_id TEXT NOT NULL,
+  creator_name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  goal NUMERIC NOT NULL,
+  current NUMERIC DEFAULT 0,
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  ends_at TIMESTAMPTZ NOT NULL,
+  status TEXT DEFAULT 'active'
+);
+ALTER TABLE IF EXISTS vaquitas DISABLE ROW LEVEL SECURITY;
+
+-- 3. UPDATES REALTIME
+DROP PUBLICATION IF EXISTS supabase_realtime;
+CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas, stocks, player_stocks;`;
+                    navigator.clipboard.writeText(repairSql);
+                    addToast("Repair SQL Copied! Run it in Supabase SQL Editor.", "success");
+                  }}
+                  className="w-full py-4 border-2 border-red-100 bg-red-50 text-red-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-100 transition-all flex items-center justify-center gap-2"
+                >
+                  <Skull className="w-4 h-4" />
+                  Arreglar Error Base de Datos
+                </button>
+                <p className="text-[10px] text-center mt-2 opacity-30 italic">Click if you see "column role does not exist" errors.</p>
+              </div>
           </div>
           <p className="mt-10 text-[10px] text-center opacity-30 uppercase tracking-[0.2em] font-black">Syncing: Online</p>
         </motion.div>
@@ -2884,6 +3306,196 @@ export default function Game() {
                </div>
             )}
 
+            {view === 'comunidad' && (
+              <div className="space-y-8 p-4">
+                 <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 to-blue-700 p-8 rounded-[2.5rem] text-white shadow-2xl">
+                    <div className="relative z-10 text-center md:text-left">
+                      <div className="flex items-center gap-3 mb-4 justify-center md:justify-start">
+                        <Users className="w-8 h-8" />
+                        <h2 className="text-3xl font-serif italic">Comunidad</h2>
+                      </div>
+                      <p className="text-blue-100 text-sm max-w-sm leading-relaxed mx-auto md:mx-0">
+                        Donde el capital se encuentra con la colaboración. Construye alianzas y proyectos comunitarios.
+                      </p>
+                    </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm flex flex-col">
+                      <div className="flex items-center gap-3 mb-4">
+                         <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center">
+                            <Users className="w-5 h-5" />
+                         </div>
+                         <h3 className="font-black uppercase tracking-widest text-xs">Formar Equipo</h3>
+                      </div>
+                      <p className="text-[11px] text-gray-500 mb-6 leading-relaxed flex-1">
+                        Aliate con un socio (máximo 2 personas). Compartan recursos y estrategias. Para invitar, usa el chat privado pronto disponible.
+                      </p>
+                      <div className="bg-amber-50 border border-amber-100 p-3 rounded-xl">
+                         <div className="text-[8px] font-black uppercase tracking-widest text-amber-600 mb-1">Regla de Oro</div>
+                         <div className="text-[10px] text-amber-800 font-bold">Máximo 2 personas por equipo.</div>
+                      </div>
+
+                      {messages.filter(m => m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id && !currentPlayer?.team_id).length > 0 && (
+                        <div className="mt-4 space-y-2">
+                           <div className="text-[9px] font-black uppercase tracking-widest text-blue-600">Invitaciones Pendientes</div>
+                           {messages.filter(m => m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id).map(m => {
+                              const [, fromId, , fromName] = m.text.split('|');
+                              return (
+                                <div key={m.id} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-100 rounded-xl">
+                                   <div className="text-[10px] font-bold text-blue-800">{fromName}</div>
+                                   <button 
+                                     onClick={() => handleTeamAccept(fromId)}
+                                     className="px-3 py-1.5 bg-blue-600 text-white text-[8px] font-black uppercase rounded-lg shadow-sm"
+                                   >
+                                     Aceptar
+                                   </button>
+                                </div>
+                              );
+                           })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm flex flex-col">
+                      <div className="flex items-center gap-3 mb-4">
+                         <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                            <Gavel className="w-5 h-5" />
+                         </div>
+                         <h3 className="font-black uppercase tracking-widest text-xs">Intercambios</h3>
+                      </div>
+                      <p className="text-[11px] text-gray-500 mb-6 leading-relaxed flex-1">
+                        Usa el chat para subastar propiedades o proponer intercambios de acciones directamente con otros magnates.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 mt-auto">
+                        <button onClick={() => setView('chat_history')} className="py-2 bg-blue-600 text-white text-[9px] font-black uppercase rounded-lg">Chat Log</button>
+                        <button onClick={() => setView('transfer')} className="py-2 border border-blue-600 text-blue-600 text-[9px] font-black uppercase rounded-lg">Trade</button>
+                      </div>
+                    </div>
+                 </div>
+
+                 <div className="bg-white p-8 rounded-[2.5rem] border border-gray-200 shadow-inner relative overflow-hidden">
+                    <div className="flex justify-between items-center mb-10">
+                      <div className="flex items-center gap-3">
+                         <div className="w-10 h-10 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center shadow-sm">
+                            <Wallet className="w-5 h-5" />
+                         </div>
+                         <div>
+                            <h3 className="font-black uppercase tracking-widest text-[11px] leading-none mb-1">Vaquitas</h3>
+                            <div className="text-[8px] uppercase tracking-widest opacity-30 font-black">Crowdfunding Comunitario</div>
+                         </div>
+                      </div>
+                      <button onClick={() => setView('vaquitas')} className="px-4 py-2 bg-gray-100 text-[9px] font-black uppercase tracking-widest rounded-full hover:bg-green-600 hover:text-white transition-all">Explorar Proyectos</button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                       {vaquitas.length > 0 ? vaquitas.slice(0, 2).map(v => (
+                         <div key={v.id} className="p-5 bg-gray-50/50 rounded-2xl border border-gray-100">
+                            <div className="flex justify-between items-center mb-3">
+                               <span className="font-black uppercase text-[11px] tracking-tight">{v.title}</span>
+                               <span className="text-green-600 font-mono text-[11px] font-bold">${v.current.toLocaleString()}</span>
+                            </div>
+                            <div className="h-2 w-full bg-gray-200/50 rounded-full overflow-hidden shadow-inner p-0.5">
+                               <div className="h-full bg-green-500 rounded-full" style={{ width: `${(v.current / v.goal) * 100}%` }} />
+                            </div>
+                         </div>
+                       )) : (
+                         <div className="text-center py-8 rounded-3xl border border-dashed border-gray-200 flex flex-col items-center gap-2">
+                           <Coins className="w-8 h-8 opacity-10" />
+                           <div className="text-[10px] text-gray-400 font-black uppercase tracking-widest">No hay vaquitas activas</div>
+                         </div>
+                       )}
+                    </div>
+                 </div>
+              </div>
+            )}
+
+            {view === 'vaquitas' && (
+              <div className="p-4 space-y-8">
+                <div className="flex justify-center items-center relative">
+                  <button onClick={() => setView('comunidad')} className="absolute left-0 p-3 bg-white border border-gray-100 rounded-2xl shadow-sm hover:bg-gray-50 transition-colors">
+                    <X className="w-5 h-5" />
+                  </button>
+                  <h2 className="text-3xl font-serif italic text-black">Vaquitas</h2>
+                </div>
+
+                <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-xl space-y-6">
+                   <div className="text-center">
+                     <h3 className="text-[10px] font-black uppercase tracking-[0.3em] opacity-30 mb-8">Lanzar Nuevo Proyecto</h3>
+                   </div>
+                   <div className="space-y-3">
+                     <input 
+                       type="text" 
+                       placeholder="NOMBRE DEL PROYECTO" 
+                       value={newVaquita.title}
+                       onChange={(e) => setNewVaquita({...newVaquita, title: e.target.value})}
+                       className="w-full px-6 py-4 bg-gray-50 border border-black/5 rounded-2xl text-[10px] font-black uppercase tracking-widest focus:ring-2 ring-green-100 outline-none"
+                     />
+                     <input 
+                       type="number" 
+                       placeholder="META EN DÓLARES" 
+                       value={newVaquita.goal}
+                       onChange={(e) => setNewVaquita({...newVaquita, goal: parseInt(e.target.value) || 0})}
+                       className="w-full px-6 py-4 bg-gray-50 border border-black/5 rounded-2xl text-[10px] font-black uppercase tracking-widest focus:ring-2 ring-green-100 outline-none"
+                     />
+                     <button 
+                       onClick={createVaquita}
+                       className="w-full py-5 bg-green-600 text-white font-black uppercase text-[11px] tracking-[0.3em] rounded-2xl shadow-lg shadow-green-200 active:scale-95 transition-all"
+                     >
+                       CREAR VAQUITA
+                     </button>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
+                   {vaquitas.map(v => (
+                     <div key={v.id} className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm space-y-6 flex flex-col">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="text-[8px] font-black uppercase text-blue-600 tracking-[0.2em] mb-2">Proyecto de {v.creator_name}</div>
+                            <h4 className="font-serif italic text-xl leading-none text-gray-900">{v.title}</h4>
+                          </div>
+                          <div className={cn(
+                            "px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest",
+                            v.status === 'active' ? "bg-green-50 text-green-600 border border-green-100" : "bg-blue-50 text-blue-600 border border-blue-100"
+                          )}>
+                            {v.status}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 flex-1">
+                          <div className="flex justify-between text-[10px] font-black font-mono">
+                             <span className="text-green-600">${v.current.toLocaleString()}</span>
+                             <span className="opacity-20">Objetivo: ${v.goal.toLocaleString()}</span>
+                          </div>
+                          <div className="h-3 w-full bg-gray-100 rounded-full overflow-hidden shadow-inner p-1">
+                             <motion.div 
+                               initial={{ width: 0 }}
+                               animate={{ width: `${Math.min(100, (v.current / v.goal) * 100)}%` }}
+                               className="h-full bg-green-500 rounded-full"
+                             />
+                          </div>
+                        </div>
+
+                        {v.status === 'active' && (
+                          <div className="grid grid-cols-2 gap-3">
+                            {[10, 100].map(amt => (
+                               <button 
+                                 key={amt}
+                                 onClick={() => donateToVaquita(v.id, amt)}
+                                 className="py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-black transition-all active:scale-95 shadow-lg shadow-black/5"
+                               >
+                                 Donar ${amt}
+                               </button>
+                            ))}
+                          </div>
+                        )}
+                     </div>
+                   ))}
+                </div>
+              </div>
+            )}
+
             {view === 'chat_history' && (
                <div className="flex-1 flex flex-col gap-6">
                  <div className="flex justify-between items-center px-1">
@@ -2907,7 +3519,7 @@ export default function Game() {
                          <div className="text-[8px] font-mono text-red-500 uppercase">{missingTables.length} Tables Missing</div>
                        </div>
                      </div>
-                     <p className="text-[9px] text-red-700 leading-relaxed font-medium">Some tables are missing (possibly due to recent updates). Please run the <b>updated</b> SQL script below to fix this.</p>
+                     <p className="text-[10px] text-red-700 leading-relaxed font-black uppercase tracking-widest">⚠️ Actualización de Base de Datos Necesaria</p>
                      <button 
                        onClick={retryConnection}
                        className="w-full py-3 bg-red-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg hover:bg-black transition-all"
@@ -2925,7 +3537,26 @@ export default function Game() {
                          onClick={() => {
                            const sql = document.getElementById('setup-sql')?.innerText;
                            if (sql) {
-                             navigator.clipboard.writeText(sql);
+                             const repairSql = `ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS role TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
+CREATE TABLE IF NOT EXISTS vaquitas (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  creator_id TEXT NOT NULL,
+  creator_name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  goal NUMERIC NOT NULL,
+  current NUMERIC DEFAULT 0,
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  ends_at TIMESTAMPTZ NOT NULL,
+  status TEXT DEFAULT 'active'
+);
+ALTER TABLE IF EXISTS vaquitas DISABLE ROW LEVEL SECURITY;
+DROP PUBLICATION IF EXISTS supabase_realtime;
+CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas, stocks, player_stocks;`;
+                            navigator.clipboard.writeText(repairSql);
                              addToast("SQL Copied to Clipboard", "success");
                            }
                          }}
@@ -2961,13 +3592,15 @@ VALUES
 ON CONFLICT (symbol) DO NOTHING;
 
 -- 1. BASE TABLE UPDATES
-ALTER TABLE players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS last_tax_at TIMESTAMPTZ DEFAULT NULL;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS last_job_at TIMESTAMPTZ DEFAULT NULL;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS airplane_style TEXT DEFAULT 'default';
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS debt NUMERIC DEFAULT 0;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS last_tax_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS last_job_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS airplane_style TEXT DEFAULT 'default';
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS role TEXT;
+ALTER TABLE IF EXISTS players ADD COLUMN IF NOT EXISTS team_id TEXT;
 
-ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_mortgaged BOOLEAN DEFAULT FALSE;
+ALTER TABLE IF EXISTS properties ADD COLUMN IF NOT EXISTS is_mortgaged BOOLEAN DEFAULT FALSE;
 
 -- 2. CORPORATE ENTITY TABLES (EMPRESA)
 CREATE TABLE IF NOT EXISTS empresa (
@@ -2981,6 +3614,21 @@ CREATE TABLE IF NOT EXISTS empresa (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE empresa DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS vaquitas (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id TEXT NOT NULL,
+  creator_id TEXT NOT NULL,
+  creator_name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  goal NUMERIC NOT NULL,
+  current NUMERIC DEFAULT 0,
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  ends_at TIMESTAMPTZ NOT NULL,
+  status TEXT DEFAULT 'active'
+);
+ALTER TABLE vaquitas DISABLE ROW LEVEL SECURITY;
 
 CREATE TABLE IF NOT EXISTS shareholders (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -3035,10 +3683,10 @@ ALTER TABLE social_connections DISABLE ROW LEVEL SECURITY;
  
 -- 5. ENABLE REALTIME
 DROP PUBLICATION IF EXISTS supabase_realtime;
-CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, social_connections, player_stocks, players, bank;`}
+CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas, stocks, player_stocks;`}
                      </div>
                      <div className="mt-4 pt-4 border-t border-white/10">
-                        <p className="text-[7px] text-white/40 italic uppercase tracking-widest">Run this in your Supabase SQL Editor to activate all features.</p>
+                        <p className="text-[8px] text-white/60 italic uppercase tracking-widest">Copia SOLO el bloque negro de arriba y pégalo en "SQL Editor" de tu proyecto Supabase.</p>
                      </div>
                    </div>
 
@@ -3214,26 +3862,51 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-2">Tycoon Operator</span>
 
-                {/* Leveling Progress */}
-                <div className="w-full mt-6 bg-gray-50 p-4 rounded-3xl border border-black/[0.03]">
-                   <div className="flex justify-between items-center mb-2">
-                     <span className="text-[9px] font-black uppercase tracking-widest opacity-30">Nivel de Tycoon</span>
-                     <span className="text-[10px] font-black text-blue-600">NV {calculateLevel(selectedProfile).level}</span>
+                 {/* Leveling Progress */}
+                 <div className="w-full mt-6 bg-blue-50/50 p-6 rounded-3xl border border-blue-100 shadow-sm relative overflow-hidden">
+                   <div className="absolute top-0 right-0 p-4 opacity-5">
+                      <Star className="w-12 h-12" />
                    </div>
-                   <div className="h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                   <div className="flex justify-between items-center mb-3">
+                     <div className="flex flex-col">
+                       <span className="text-[9px] font-black uppercase tracking-widest text-blue-600/40">Status Level</span>
+                       <span className="text-xl font-serif italic text-blue-900 leading-none">Level {calculateLevel(selectedProfile).level}</span>
+                     </div>
+                     <div className="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-600/20">
+                        {calculateLevel(selectedProfile).progress}%
+                     </div>
+                   </div>
+                   <div className="h-2.5 w-full bg-blue-100/50 rounded-full overflow-hidden border border-blue-200/50 p-0.5 shadow-inner">
                      <motion.div 
-                       initial={{ width: 0 }}
-                       animate={{ width: `${calculateLevel(selectedProfile).progress}%` }}
-                       className="h-full bg-blue-600"
+                       initial={{ width: 0, shadow: '0 0 0px blue' }}
+                       animate={{ 
+                         width: `${calculateLevel(selectedProfile).progress}%`,
+                         boxShadow: '0 0 15px rgba(37,99,235,0.4)'
+                       }}
+                       className="h-full bg-blue-600 rounded-full"
                      />
                    </div>
-                   <div className="flex justify-between items-center mt-1.5">
-                     <span className="text-[7px] font-bold opacity-30 uppercase">XP DE PATRIMONIO</span>
-                     <span className="text-[7px] font-bold opacity-30 uppercase">${calculateLevel(selectedProfile).netWorth.toLocaleString()} NET WORTH</span>
+                   <div className="flex justify-between items-center mt-3 pt-3 border-t border-blue-100/50">
+                     <div className="flex flex-col">
+                        <span className="text-[7px] font-black opacity-30 uppercase tracking-widest">Global Net Worth</span>
+                        <span className="text-[10px] font-mono font-black text-blue-600">${calculateLevel(selectedProfile).netWorth.toLocaleString()}</span>
+                     </div>
+                     <Trophy className="w-4 h-4 text-amber-500 opacity-40" />
                    </div>
-                </div>
+                 </div>
 
                 <div className="grid grid-cols-2 gap-4 w-full mt-10">
+                  <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-1">Rol Social</span>
+                    <span className="text-sm font-black uppercase text-gray-900">{selectedProfile.role || 'Iniciado'}</span>
+                  </div>
+                  <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-1">Comunidad</span>
+                    <span className="text-sm font-black uppercase text-gray-900">{selectedProfile.team_id ? 'En Equipo' : 'Solo'}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 w-full mt-4">
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
                     <span className="text-[9px] font-black uppercase tracking-widest opacity-30 mb-2">Cash Balance</span>
                     <div className="flex flex-col items-center">
@@ -3253,6 +3926,36 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                     </span>
                   </div>
                 </div>
+
+                {currentPlayer && selectedProfile.id !== currentPlayer.id && !selectedProfile.team_id && !currentPlayer.team_id && (
+                  <button 
+                    onClick={() => {
+                      addToast(`Invitación de equipo enviada a ${selectedProfile.name}`, "info");
+                      supabase.from('messages').insert({
+                        game_id: gameId,
+                        player_id: 'SYSTEM',
+                        player_name: 'Tycoon System',
+                        text: `[TEAM_INVITE]|${currentPlayer.id}|${selectedProfile.id}|${currentPlayer.name}`
+                      });
+                    }}
+                    className="w-full mt-6 py-4 bg-blue-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-blue-100 flex items-center justify-center gap-2"
+                  >
+                    <Users className="w-4 h-4" /> Invitar al Equipo (Max 2)
+                  </button>
+                )}
+
+                {currentPlayer && selectedProfile.id !== currentPlayer.id && (
+                   <button 
+                     onClick={() => {
+                       setView('chat_history');
+                       setNewMessage(`@${selectedProfile.name} `);
+                       setSelectedProfile(null);
+                     }}
+                     className="w-full mt-2 py-4 bg-gray-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
+                   >
+                     <Send className="w-4 h-4" /> Enviar Mensaje Directo
+                   </button>
+                )}
 
                 {currentPlayer?.id === selectedProfile.id && (
                   <div className="w-full mt-8 space-y-4">
@@ -3418,7 +4121,28 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                     "px-4 py-3 rounded-2xl text-[12px] leading-relaxed max-w-[85%] shadow-sm",
                     m.player_id === currentPlayer?.id ? "bg-blue-600 text-white rounded-tr-none" : "bg-gray-100 text-gray-800 rounded-tl-none border border-black/5"
                   )}>
-                    {m.text}
+                    {m.text.startsWith('[SYSTEM_AUCTION_START]') ? (
+                      <div className="flex flex-col gap-2 min-w-[200px]">
+                        <div className="flex items-center gap-2 text-amber-600 font-black">
+                          <Gavel className="w-4 h-4" />
+                          <span>¡SUBASTA ACTIVA!</span>
+                        </div>
+                        <div className="text-sm font-black uppercase text-gray-900">
+                          {BOARD_SPACES[parseInt(m.text.split('|')[1])].name}
+                        </div>
+                        <button 
+                          onClick={() => setActiveAuction(prev => prev)} // Re-opening state
+                          className="mt-2 py-2 bg-amber-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg"
+                        >
+                          Ir a la Puja
+                        </button>
+                      </div>
+                    ) : m.text.startsWith('[SYSTEM_AUCTION_BID]') ? (
+                      <div className="flex items-center gap-2 text-amber-700 font-bold italic">
+                        <TrendingUp className="w-3 h-3" />
+                         Puja actual: ${parseInt(m.text.split('|')[2]).toLocaleString()}
+                      </div>
+                    ) : m.text}
                   </div>
                 </div>
               ))}
@@ -3442,6 +4166,78 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
                 <Send className="w-4 h-4" />
               </button>
             </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {activeAuction && (
+          <motion.div 
+            initial={{ opacity: 0, y: 100 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 100 }}
+            className="fixed inset-x-4 bottom-24 z-[200] max-w-lg mx-auto"
+          >
+            <div className="bg-white border-2 border-amber-500 rounded-[2.5rem] shadow-[0_20px_50px_rgba(245,158,11,0.3)] overflow-hidden">
+               <div className="bg-amber-500 p-6 text-white flex justify-between items-center">
+                 <div className="flex items-center gap-3">
+                   <Gavel className="w-8 h-8" />
+                   <div>
+                     <div className="text-[10px] font-black uppercase tracking-widest opacity-60">SUBASTA EN VIVO</div>
+                     <div className="text-xl font-black uppercase tracking-tight">
+                       {BOARD_SPACES[activeAuction.space_id].name}
+                     </div>
+                   </div>
+                 </div>
+                 <div className="text-right">
+                   <div className="text-[10px] font-black uppercase tracking-widest opacity-60">TIEMPO</div>
+                   <div className="text-2xl font-mono font-black">
+                     {Math.max(0, Math.ceil((activeAuction.ends_at - Date.now()) / 1000))}s
+                   </div>
+                 </div>
+               </div>
+               
+               <div className="p-8 space-y-6">
+                 <div className="flex justify-between items-end border-b border-gray-100 pb-6">
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-widest opacity-30 mb-1">Liderando</div>
+                      <div className="text-sm font-black text-gray-900 uppercase">
+                        {activeAuction.highest_bidder_name || "Nadie aún"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] font-black uppercase tracking-widest opacity-30 mb-1">Puja Actual</div>
+                      <div className="text-3xl font-mono font-black text-amber-600">
+                        ${activeAuction.current_bid.toLocaleString()}
+                      </div>
+                    </div>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-4">
+                    <button 
+                      onClick={() => placeBid(activeAuction.space_id, activeAuction.current_bid + 100)}
+                      className="py-4 bg-gray-900 text-white text-[11px] font-black uppercase tracking-widest rounded-2xl shadow-lg ring-1 ring-white/20 active:scale-95 transition-all"
+                    >
+                      Puja +$100
+                    </button>
+                    <button 
+                      onClick={() => placeBid(activeAuction.space_id, activeAuction.current_bid + 500)}
+                      className="py-4 bg-amber-600 text-white text-[11px] font-black uppercase tracking-widest rounded-2xl shadow-lg active:scale-95 transition-all"
+                    >
+                      Puja +$500
+                    </button>
+                 </div>
+                 
+                 <div className="text-center">
+                   <button 
+                     onClick={() => setActiveAuction(null)}
+                     className="text-[10px] font-black uppercase tracking-widest opacity-20 hover:opacity-100 transition-opacity"
+                   >
+                     Cerrar Vista (La subasta sigue)
+                   </button>
+                 </div>
+               </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -3586,7 +4382,8 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, empresa, shareholders, 
               { id: 'casino', icon: Coins, label: 'Casino' },
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
               { id: 'missions', icon: Trophy, label: 'Quests' },
-              { id: 'stats', icon: Users, label: 'Players' },
+              { id: 'comunidad', icon: Users, label: 'Comunidad' },
+              { id: 'stats', icon: Trophy, label: 'Ranking' },
               { id: 'chat_history', icon: Send, label: 'Chat Log' }
             ].map(v => (
               <button 
