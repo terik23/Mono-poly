@@ -63,6 +63,7 @@ interface Stock {
   price: number;
   history: { time: string; price: number }[];
   change: number;
+  owner_id?: string;
 }
 
 interface Company {
@@ -429,6 +430,41 @@ export default function Game() {
         setCasinoPot(total);
       }
 
+      // Sync Stocks
+      const stockMarketData = await fetchSafely('stocks', supabase.from('stocks').select('*'));
+      if (stockMarketData) {
+        setStocks(stockMarketData.map((s: any) => ({
+          symbol: s.symbol,
+          name: s.name,
+          price: s.price,
+          history: s.history || [],
+          change: s.change || 0,
+          owner_id: s.owner_id
+        })));
+
+        // AUTO-SYNC: If we have empresas without a stock, create it
+        if (compData) {
+          for (const c of compData) {
+            const hasStock = stockMarketData.some((s: any) => s.owner_id === c.owner_id);
+            if (!hasStock) {
+              let symbol = c.name.substring(0, 4).toUpperCase();
+              // Basic uniqueness check against locally fetched stocks
+              if (stockMarketData.some((s: any) => s.symbol === symbol)) {
+                 symbol = (c.name.substring(0, 3) + Math.floor(Math.random() * 10)).toUpperCase();
+              }
+              
+              await supabase.from('stocks').insert({
+                symbol,
+                name: c.name,
+                price: c.base_price || 1000,
+                owner_id: c.owner_id,
+                history: c.history?.length ? c.history : [{ time: new Date().toLocaleTimeString(), price: 1000 }]
+              });
+            }
+          }
+        }
+      }
+
     } catch (e: any) {
       console.error("Fetch Data Error:", e);
       setErrorMsg(`Synchronization Lag: Reconnecting...`); // Softer error message
@@ -526,20 +562,8 @@ export default function Game() {
   // Stock Market Fluctuation
   useEffect(() => {
     const interval = setInterval(async () => {
-      // Global stock sync
-      const { data: globalStocks, error: fetchErr } = await supabase.from('stocks').select('*');
-      
-      if (globalStocks && globalStocks.length > 0) {
-        setStocks(globalStocks.map(gs => ({
-          symbol: gs.symbol,
-          name: gs.name,
-          price: gs.price,
-          history: gs.history || [],
-          change: gs.change || 0
-        })));
-        
-        // Only one player updates the prices (to prevent collisions)
-        // We'll pick the one who is logged in and has the "lowest" ID alphabetically
+      // Only one player updates the prices (to prevent collisions)
+      if (stocks.length > 0) {
         const activePlayers = players.filter(p => new Date().getTime() - new Date(p.last_roll_at || 0).getTime() < 600000);
         const myRank = activePlayers.sort((a,b) => a.id.localeCompare(b.id))[0];
         
@@ -548,7 +572,9 @@ export default function Game() {
            const lastTime = lastUpdate?.updated_at ? new Date(lastUpdate.updated_at).getTime() : 0;
            
            if (Date.now() - lastTime > 55000) { // Approx 1 minute
-              for (const s of globalStocks) {
+              for (const s of stocks) {
+                if (s.owner_id) continue; // Exclude player companies from random noise
+                
                 const isExtreme = Math.random() < 0.15; 
                 const isCrash = Math.random() < 0.05;
                 const volatility = isExtreme ? 0.4 : 0.08;
@@ -576,9 +602,9 @@ export default function Game() {
            }
         }
       }
-    }, 10000); // Check every 10s for updates from others
+    }, 60000); // Check once per minute for updates
     return () => clearInterval(interval);
-  }, [currentPlayer?.id, players]);
+  }, [currentPlayer?.id, players, stocks]);
 
   const buyStock = async (symbol: string, amount: number) => {
     const stock = stocks.find(s => s.symbol === symbol);
@@ -671,7 +697,7 @@ export default function Game() {
       return;
     }
 
-    const { data, error } = await supabase
+    const { data: company, error } = await supabase
       .from('empresa')
       .insert({
         game_id: gameId,
@@ -702,8 +728,23 @@ export default function Game() {
         addToast(`Empresa error: ${error.message}`, "error");
         return;
       }
-    }
+    } else {
+      // Create stock entry only if previous insert worked
+      let symbol = newEmpresaName.substring(0, 4).toUpperCase();
+      const { data: existingStock } = await supabase.from('stocks').select('symbol').eq('symbol', symbol).single();
+      if (existingStock) {
+        symbol = (newEmpresaName.substring(0, 3) + Math.floor(Math.random() * 10)).toUpperCase();
+      }
 
+      await supabase.from('stocks').insert({
+        symbol,
+        name: newEmpresaName,
+        price: 1000,
+        owner_id: currentPlayer.id,
+        history: [{ time: new Date().toLocaleTimeString(), price: 1000 }]
+      });
+    }
+    
     await handleBalanceUpdate(currentPlayer.id, -10000);
     setIsCreatingEmpresa(false);
     setNewEmpresaName('');
@@ -921,6 +962,25 @@ export default function Game() {
       balance: newBalance,
       negative_since: negativeSince
     }).eq('id', playerId);
+
+    // NEW: Update Player Stock Price based on wealth movement
+    const playerStock = stocks.find(s => s.owner_id === playerId);
+    if (playerStock) {
+      const volatility = 0.001; // $1,000 change = 1% price change
+      const percentageChange = delta * volatility;
+      const newPrice = Math.max(1.0, playerStock.price * (1 + percentageChange));
+      const newHistory = [...(playerStock.history || []).slice(-29), { 
+        time: new Date().toLocaleTimeString(), 
+        price: Number(newPrice.toFixed(2)) 
+      }];
+
+      await supabase.from('stocks').update({
+        price: Number(newPrice.toFixed(2)),
+        history: newHistory,
+        change: Number((percentageChange * 100).toFixed(2)),
+        updated_at: new Date().toISOString()
+      }).eq('symbol', playerStock.symbol);
+    }
   };
 
   const sellProperty = async (spaceId: number) => {
@@ -2214,8 +2274,8 @@ export default function Game() {
                    </motion.div>
                 </div>
 
-                {/* START EMPRESA BUTTON */}
-                {isJoined && currentPlayer && (
+                {/* START EMPRESA BUTTON - ONLY IF NOT OWNER */}
+                {isJoined && currentPlayer && !empresaList.some(e => e.owner_id === currentPlayer.id) && (
                   <div className="bg-blue-600 p-6 rounded-3xl text-white shadow-xl">
                     <div className="flex items-center justify-between mb-4">
                       <div>
@@ -2259,173 +2319,129 @@ export default function Game() {
                   </div>
                 )}
 
-                {/* PLAYER COMPANIES */}
-                {empresaList.length > 0 && (
-                  <div className="space-y-4">
-                    <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Corporate Index</div>
-                    {empresaList.map(c => {
-                      const owner = players.find(p => p.id === c.owner_id);
-                      const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
-                      const price = c.base_price * multiplier;
-                      const myShares = shareholders.filter(s => s.company_id === c.id && s.player_id === currentPlayer?.id).reduce((acc, s) => acc + s.shares, 0);
+                {/* UNIFIED STOCK MARKET */}
+                <div className="space-y-6">
+                  <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Market Index</div>
+                  {stocks.map(s => {
+                    const owner = s.owner_id ? players.find(p => p.id === s.owner_id) : null;
+                    const isPlayerStock = !!owner;
+                    const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
+                    const price = s.price;
+                    const myShares = playerStocks[s.symbol] || 0;
+                    
+                    // Shareholders: Find all players who own this stock
+                    const stockShareholders = players
+                      .filter(p => {
+                         // We'd need to fetch other players' stocks too, but for now we only have current ones in state properly
+                         // Actually, fetchData fetches the `player_stocks` for current user... 
+                         // To show ALL shareholders we'd need another sync.
+                         // For now, let's just stick to the current user's shares and maybe the owner.
+                         return false; 
+                      });
 
-                      // Generate stable chart data for visual polish
-                      const chartData = c.history?.length ? c.history : [
-                        { price: price * 0.92, time: '08:00' },
-                        { price: price * 0.95, time: '09:00' },
-                        { price: price * 0.98, time: '10:00' },
-                        { price: price, time: '11:00' }
-                      ];
-
-                      return (
-                        <div key={c.id} className="bg-white border border-black/5 p-6 rounded-[2rem] shadow-sm hover:shadow-md transition-all group overflow-hidden">
-                          <div className="flex justify-between items-start mb-6">
-                            <div className="flex items-center gap-4">
-                               <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
-                                  <Building2 className="w-6 h-6" />
-                               </div>
-                               <div>
-                                 <h3 className="text-sm font-black uppercase text-gray-900 leading-none mb-1">{c.name}</h3>
-                                 <div className="flex items-center gap-2">
-                                    <span className="text-[8px] font-black uppercase text-blue-600">CEO: {c.owner_name}</span>
-                                    <div className="w-1 h-1 bg-black/10 rounded-full" />
-                                    <span className={cn("text-[8px] font-black uppercase", multiplier >= 1 ? "text-green-500" : "text-amber-500")}>
-                                      {multiplier >= 1.5 ? 'Market Dominance' : multiplier >= 1 ? 'Stable' : 'Volatile'}
-                                    </span>
-                                 </div>
-                               </div>
-                            </div>
-                            <div className="text-right">
-                              <div className="text-xl font-mono font-black text-gray-900">${price.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-                              <div className="text-[8px] font-black uppercase text-gray-400 flex items-center justify-end gap-1">
-                                <TrendingUp className="w-2 h-2" />
-                                Market Valuation
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Enterprise Performance Chart */}
-                          <div className="h-20 w-full mb-6">
-                             <ResponsiveContainer width="100%" height="100%">
-                               <AreaChart data={chartData}>
-                                 <defs>
-                                   <linearGradient id={`priceGrad-${c.id}`} x1="0" y1="0" x2="0" y2="1">
-                                     <stop offset="5%" stopColor="#2563eb" stopOpacity={0.1}/>
-                                     <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                                   </linearGradient>
-                                 </defs>
-                                 <Area 
-                                   type="monotone" 
-                                   dataKey="price" 
-                                   stroke="#2563eb" 
-                                   strokeWidth={2}
-                                   fillOpacity={1} 
-                                   fill={`url(#priceGrad-${c.id})`} 
-                                 />
-                               </AreaChart>
-                             </ResponsiveContainer>
-                          </div>
-
-                          {/* Locations / Buildings Display */}
-                          <div className="flex items-center gap-3 mb-6 p-4 bg-gray-50 rounded-[1.5rem] border border-black/[0.02]">
-                             <div className="flex -space-x-1.5">
-                               {[...Array(Math.min(5, Math.ceil(multiplier * 2)))].map((_, i) => (
-                                 <div key={i} className="w-9 h-9 bg-white border border-black/5 rounded-xl flex items-center justify-center shadow-sm hover:scale-110 transition-transform cursor-pointer group/loc">
-                                   <Building className="w-5 h-5 text-blue-600" />
-                                   <div className="absolute -top-8 bg-black text-white text-[7px] px-2 py-1 rounded-md opacity-0 group-hover/loc:opacity-100 transition-opacity">Asset Unit</div>
-                                 </div>
-                               ))}
+                    return (
+                      <div key={s.symbol} className="bg-white border border-black/5 p-6 rounded-[2rem] shadow-sm hover:shadow-md transition-all group overflow-hidden">
+                        <div className="flex justify-between items-start mb-6">
+                          <div className="flex items-center gap-4">
+                             <div className={cn(
+                               "w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg",
+                               isPlayerStock ? "bg-blue-600" : "bg-black"
+                             )}>
+                                {isPlayerStock ? <Building2 className="w-6 h-6" /> : <TrendingUp className="w-6 h-6" />}
                              </div>
-                             <div className="flex-1">
-                                <div className="text-[10px] font-black uppercase text-gray-900 tracking-tight leading-none mb-0.5">
-                                  {Math.max(1, Math.floor(multiplier * 5))} Global Infrastructure
-                                </div>
-                                <div className="text-[8px] font-bold uppercase text-gray-400 tracking-widest leading-none">Economic Presence</div>
+                             <div>
+                               <h3 className="text-sm font-black uppercase text-gray-900 leading-none mb-1">{s.name}</h3>
+                               <div className="flex items-center gap-2">
+                                  <span className="text-[8px] font-black uppercase text-gray-400">{s.symbol}</span>
+                                  {isPlayerStock && (
+                                    <>
+                                      <div className="w-1 h-1 bg-black/10 rounded-full" />
+                                      <span className="text-[8px] font-black uppercase text-blue-600">CEO: {owner?.name}</span>
+                                    </>
+                                  )}
+                                  <div className="w-1 h-1 bg-black/10 rounded-full" />
+                                  <span className={cn("text-[8px] font-black uppercase", s.change >= 0 ? "text-green-500" : "text-red-500")}>
+                                    {s.change >= 0 ? '+' : ''}{s.change}%
+                                  </span>
+                               </div>
                              </div>
                           </div>
-
-                          {/* Investors List */}
-                          <div className="space-y-2 mb-6">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[8px] font-black uppercase opacity-20 tracking-widest">Shareholders</span>
-                              <span className="text-[8px] font-mono opacity-40">{shareholders.filter(s => s.company_id === c.id).length} Active</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {shareholders.filter(s => s.company_id === c.id).map((s, idx) => {
-                                const investor = players.find(p => p.id === s.player_id);
-                                return (
-                                  <div key={idx} className="bg-gray-50 border border-black/[0.03] px-2.5 py-1 rounded-lg text-[8px] font-black uppercase text-gray-600 flex items-center gap-1.5">
-                                    <div className="w-1 h-1 rounded-full bg-blue-500" />
-                                    {investor?.name || 'Venture Fund'} <span className="opacity-40">{s.shares} Sh</span>
-                                  </div>
-                                );
-                              })}
-                              {shareholders.filter(s => s.company_id === c.id).length === 0 && (
-                                <div className="text-[8px] font-black uppercase opacity-20 italic">Fully Privatized</div>
-                              )}
+                          <div className="text-right">
+                            <div className="text-xl font-mono font-black text-gray-900">${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-[8px] font-black uppercase text-gray-400 flex items-center justify-end gap-1">
+                              {s.change >= 0 ? <TrendingUp className="w-2 h-2 text-green-500" /> : <TrendingDown className="w-2 h-2 text-red-500" />}
+                              Market Value
                             </div>
                           </div>
-                          
-                          <div className="flex gap-2">
-                             <button 
-                               onClick={() => investInEmpresa(c.id, 1)}
-                               disabled={!currentPlayer || currentPlayer.balance < price || c.owner_id === currentPlayer.id}
-                               className="flex-1 py-4 bg-gray-900 text-white text-[10px] font-black uppercase rounded-2xl disabled:opacity-30 flex items-center justify-center gap-2 hover:bg-black transition-colors"
-                             >
-                               {c.owner_id === currentPlayer?.id ? (
-                                 <>
-                                   <History className="w-3 h-3 opacity-40" /> Owned
-                                 </>
-                               ) : (
-                                 <>
-                                   <Briefcase className="w-3 h-3" /> Buy Share
-                                 </>
-                               )}
-                             </button>
-                          </div>
-                          {myShares > 0 && (
-                            <div className="bg-gray-50 border border-black/[0.03] p-2 rounded-xl flex items-center justify-between">
-                               <span className="text-[8px] font-black uppercase opacity-40">Your Equity</span>
-                               <span className="text-[8px] font-mono font-black">{myShares} SHARES</span>
-                            </div>
-                          )}
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
 
-                <div className="text-[10px] font-black uppercase tracking-widest opacity-30 px-1">Global Commodities</div>
-                {stocks.map(s => (
-                  <div key={s.symbol} className="bg-gray-50 border border-black/[0.03] p-4 rounded-2xl flex flex-col gap-4">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="text-[10px] font-black uppercase tracking-widest opacity-30">{s.symbol}</div>
-                        <div className="text-sm font-bold uppercase">{s.name}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-lg font-mono font-black">${s.price.toFixed(2)}</div>
-                        <div className={cn("text-[10px] font-bold", s.change >= 0 ? "text-green-600" : "text-red-600")}>
-                          {s.change >= 0 ? '+' : ''}{s.change}%
-                        </div>
-                      </div>
-                    </div>
-                        <div className="h-24 w-full bg-blue-50/30 rounded-xl overflow-hidden">
-                           <ResponsiveContainer width="100%" height={96}>
-                              <AreaChart data={s.history}>
-                                 <Area type="monotone" dataKey="price" stroke={s.change >= 0 ? '#16a34a' : '#dc2626'} fill={s.change >= 0 ? '#dcfce7' : '#fee2e2'} />
-                              </AreaChart>
+                        {/* Chart */}
+                        <div className="h-24 w-full mb-6">
+                           <ResponsiveContainer width="100%" height="100%">
+                             <AreaChart data={s.history}>
+                               <defs>
+                                 <linearGradient id={`priceGrad-${s.symbol}`} x1="0" y1="0" x2="0" y2="1">
+                                   <stop offset="5%" stopColor={s.change >= 0 ? "#16a34a" : "#dc2626"} stopOpacity={0.1}/>
+                                   <stop offset="95%" stopColor={s.change >= 0 ? "#16a34a" : "#dc2626"} stopOpacity={0}/>
+                                 </linearGradient>
+                               </defs>
+                               <Area 
+                                 type="monotone" 
+                                 dataKey="price" 
+                                 stroke={s.change >= 0 ? "#16a34a" : "#dc2626"} 
+                                 strokeWidth={2}
+                                 fillOpacity={1} 
+                                 fill={`url(#priceGrad-${s.symbol})`} 
+                               />
+                             </AreaChart>
                            </ResponsiveContainer>
                         </div>
-                    <div className="flex gap-2">
-                       <button onClick={() => buyStock(s.symbol, 1)} className="flex-1 py-2 bg-black text-white text-[10px] font-black uppercase rounded-lg">Buy 1</button>
-                       <button onClick={() => sellStock(s.symbol, 1)} className="flex-1 py-2 bg-gray-200 text-black text-[10px] font-black uppercase rounded-lg">Sell 1</button>
-                    </div>
-                    {playerStocks[s.symbol] > 0 && (
-                      <div className="text-[9px] font-black uppercase tracking-widest opacity-40 text-center">Owned: {playerStocks[s.symbol]}</div>
-                    )}
-                  </div>
-                ))}
+
+                        {isPlayerStock && (
+                           <div className="flex items-center gap-3 mb-6 p-4 bg-gray-50 rounded-[1.5rem] border border-black/[0.02]">
+                              <div className="flex -space-x-1.5">
+                                {[...Array(Math.min(5, Math.ceil(multiplier * 2)))].map((_, i) => (
+                                  <div key={i} className="w-9 h-9 bg-white border border-black/5 rounded-xl flex items-center justify-center shadow-sm hover:scale-110 transition-transform cursor-pointer group/loc">
+                                    <Building className="w-5 h-5 text-blue-600" />
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="flex-1">
+                                 <div className="text-[10px] font-black uppercase text-gray-900 tracking-tight leading-none mb-0.5">
+                                   Performance: {multiplier >= 1.5 ? 'Dominant' : multiplier >= 1 ? 'Stable' : 'Volatile'}
+                                 </div>
+                                 <div className="text-[8px] font-bold uppercase text-gray-400 tracking-widest leading-none">Capital Influence</div>
+                              </div>
+                           </div>
+                        )}
+
+                        <div className="flex gap-2">
+                           <button 
+                             onClick={() => buyStock(s.symbol, 1)}
+                             disabled={!currentPlayer || currentPlayer.balance < price * 0.5}
+                             className="flex-1 py-4 bg-gray-900 text-white text-[10px] font-black uppercase rounded-2xl disabled:opacity-30 hover:bg-black transition-colors"
+                           >
+                              Buy Share
+                           </button>
+                           {myShares > 0 && (
+                             <button 
+                               onClick={() => sellStock(s.symbol, 1)}
+                               className="flex-1 py-4 bg-gray-100 text-black text-[10px] font-black uppercase rounded-2xl hover:bg-gray-200 transition-colors"
+                             >
+                                Sell Share
+                             </button>
+                           )}
+                        </div>
+                        {myShares > 0 && (
+                          <div className="mt-3 bg-gray-50 border border-black/[0.03] p-2 rounded-xl flex items-center justify-between">
+                             <span className="text-[8px] font-black uppercase opacity-40">Your Allocation</span>
+                             <span className="text-[8px] font-mono font-black">{myShares} SHARES</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -2775,6 +2791,7 @@ CREATE TABLE IF NOT EXISTS stocks (
   price NUMERIC NOT NULL,
   history JSONB DEFAULT '[]',
   change NUMERIC DEFAULT 0,
+  owner_id TEXT DEFAULT NULL,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
