@@ -3,15 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './lib/supabase';
 import { BOARD_SPACES } from './constants';
-import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Building2, 
   MapPin, 
   Building,
   ShieldAlert,
+  Star,
   Wallet, 
   History, 
   Users, 
@@ -323,6 +324,30 @@ export default function Game() {
   const [worldEvent, setWorldEvent] = useState<{ type: 'boom' | 'crash' | 'inflation' | 'holiday'; msg: string; intensity: number; ends_at: number } | null>(null);
   
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
+  const [transferAmount, setTransferAmount] = useState('');
+
+  // Performance: Memoize scoreboard to prevent full re-renders on every tick
+  const memoizedScoreboard = useMemo(() => {
+    return [...players]
+      .sort((a, b) => (b.balance || 0) - (a.balance || 0))
+      .map((p, idx) => (
+        <div 
+          key={p.id} 
+          className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group cursor-pointer" 
+          onClick={() => setSelectedProfile(p)}
+        >
+          <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
+          <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
+          <div className="flex-1">
+            <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
+            <div className="text-[9px] font-mono font-bold opacity-30">${(p.balance || 0).toLocaleString()}</div>
+          </div>
+          {p.id === currentPlayer?.id && (
+             <span className="text-[7px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Self</span>
+          )}
+        </div>
+      ));
+  }, [players, currentPlayer?.id]);
 
   const processAuctionMessage = useCallback((text: string) => {
     if (text.startsWith('[SYSTEM_AUCTION_START]')) {
@@ -360,6 +385,11 @@ export default function Game() {
         ends_at: Date.now() + 300000 // 5 minutes
       });
       addToast(msg, "info");
+
+      // Apply Holiday Reward: $50 to EVERYONE
+      if (type === 'holiday' && currentPlayer) {
+         handleBalanceUpdate(currentPlayer.id, 50).catch(console.error);
+      }
     }
   }, []);
 
@@ -1084,14 +1114,16 @@ export default function Game() {
     }
   };
 
-  const calculateLevel = (player: Player) => {
-    const netWorth = player.balance + (properties.filter(p => p.owner_id === player.id).length * 1000);
+  const calculateLevel = useCallback((player: Player | null) => {
+    if (!player) return { level: 1, progress: 0, netWorth: 0 };
+    const playerPropertiesCount = properties.filter(p => p.owner_id === player.id).length;
+    const netWorth = (player.balance || 0) + (playerPropertiesCount * 1000);
     const level = Math.floor(Math.sqrt(netWorth / 250)) + 1;
     const nextLevelThreshold = Math.pow(level, 2) * 250;
     const currentLevelThreshold = Math.pow(level - 1, 2) * 250;
-    const progress = ((netWorth - currentLevelThreshold) / (nextLevelThreshold - currentLevelThreshold)) * 100;
+    const progress = Math.min(100, Math.floor(((netWorth - currentLevelThreshold) / (nextLevelThreshold - currentLevelThreshold)) * 100));
     return { level, progress, netWorth };
-  };
+  }, [properties]);
 
   const handleCasinoBet = async (amount: number) => {
     if (!currentPlayer || currentPlayer.balance < amount || isSpinning) {
@@ -1817,9 +1849,10 @@ export default function Game() {
       
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
       if (terik) {
-        await handleBalanceUpdate(terik.id, taxAmount);
+        handleBalanceUpdate(terik.id, taxAmount).catch(console.error);
       }
       
+      // Update local state record for this tax application
       currentPlayer.last_tax_at = now.toISOString();
     }
 
@@ -1956,7 +1989,8 @@ export default function Game() {
         position: nextPos, 
         balance: balance,
         last_roll_at: new Date().toISOString(),
-        last_daily_at: balance > currentPlayer.balance ? new Date().toISOString() : currentPlayer.last_daily_at
+        last_daily_at: currentPlayer.last_daily_at,
+        last_tax_at: currentPlayer.last_tax_at
       })
       .eq('id', currentPlayer.id);
 
@@ -2437,7 +2471,6 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
           className="flex-1 bg-[#e5e5e5] overflow-auto relative custom-scrollbar bg-[radial-gradient(#ccc_1px,transparent_1px)] [background-size:32px_32px]"
         >
           <div className="min-w-full min-h-full flex p-12 md:p-32">
-            <LayoutGroup>
               <div 
                 className="relative transition-all duration-1000 ease-in-out shrink-0 m-auto" 
                 style={{ 
@@ -2628,7 +2661,6 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
           </div>
         </div>
       </div>
-    </LayoutGroup>
   </div>
 </div>
 
@@ -2778,19 +2810,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                        <div className="text-[10px] font-black text-blue-600/50">{players.length} PLAYER(S)</div>
                     </div>
                     <div className="space-y-2 pb-4">
-                      {players.sort((a, b) => b.balance - a.balance).map((p, idx) => (
-                        <div key={p.id} className="flex items-center gap-4 p-3 bg-white border border-black/[0.03] rounded-sm hover:border-black/10 transition-all group cursor-pointer" onClick={() => setSelectedProfile(p)}>
-                          <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
-                          <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
-                          <div className="flex-1">
-                            <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
-                            <div className="text-[9px] font-mono font-bold opacity-30">${p.balance.toLocaleString()}</div>
-                          </div>
-                          {p.id === currentPlayer?.id && (
-                             <span className="text-[7px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Self</span>
-                          )}
-                        </div>
-                      ))}
+                      {memoizedScoreboard}
                     </div>
                   </div>
                 )}
@@ -2863,19 +2883,10 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                   {stocks.map(s => {
                     const owner = s.owner_id ? players.find(p => p.id === s.owner_id) : null;
                     const isPlayerStock = !!owner;
-                    const multiplier = owner ? (Math.max(100, owner.balance) / 10000) : 1;
-                    const price = s.price;
+                    const multiplier = owner ? (Math.max(100, (owner.balance || 0)) / 10000) : 1;
+                    const price = s.price || 0;
                     const myShares = playerStocks[s.symbol] || 0;
-                    
-                    // Shareholders: Find all players who own this stock
-                    const stockShareholders = players
-                      .filter(p => {
-                         // We'd need to fetch other players' stocks too, but for now we only have current ones in state properly
-                         // Actually, fetchData fetches the `player_stocks` for current user... 
-                         // To show ALL shareholders we'd need another sync.
-                         // For now, let's just stick to the current user's shares and maybe the owner.
-                         return false; 
-                      });
+                    const stockHistory = (s.history && s.history.length > 0) ? s.history : [{time: '0', price: price}];
 
                     return (
                       <div key={s.symbol} className="bg-white border border-black/5 p-6 rounded-[2rem] shadow-sm hover:shadow-md transition-all group overflow-hidden">
@@ -2905,9 +2916,9 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                              </div>
                           </div>
                           <div className="text-right">
-                            <div className="text-xl font-mono font-black text-gray-900">${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-xl font-mono font-black text-gray-900">${(price || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                             <div className="text-[8px] font-black uppercase text-gray-400 flex items-center justify-end gap-1">
-                              {s.change >= 0 ? <TrendingUp className="w-2 h-2 text-green-500" /> : <TrendingDown className="w-2 h-2 text-red-500" />}
+                              {(s.change || 0) >= 0 ? <TrendingUp className="w-2 h-2 text-green-500" /> : <TrendingDown className="w-2 h-2 text-red-500" />}
                               Market Value
                             </div>
                           </div>
@@ -2916,7 +2927,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                         {/* Chart */}
                         <div className="h-24 w-full mb-6">
                            <ResponsiveContainer width="100%" height="100%">
-                             <AreaChart data={s.history}>
+                             <AreaChart data={stockHistory}>
                                <defs>
                                  <linearGradient id={`priceGrad-${s.symbol}`} x1="0" y1="0" x2="0" y2="1">
                                    <stop offset="5%" stopColor={s.change >= 0 ? "#16a34a" : "#dc2626"} stopOpacity={0.1}/>
@@ -3863,37 +3874,42 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                 <span className="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mt-2">Tycoon Operator</span>
 
                  {/* Leveling Progress */}
-                 <div className="w-full mt-6 bg-blue-50/50 p-6 rounded-3xl border border-blue-100 shadow-sm relative overflow-hidden">
-                   <div className="absolute top-0 right-0 p-4 opacity-5">
-                      <Star className="w-12 h-12" />
-                   </div>
-                   <div className="flex justify-between items-center mb-3">
-                     <div className="flex flex-col">
-                       <span className="text-[9px] font-black uppercase tracking-widest text-blue-600/40">Status Level</span>
-                       <span className="text-xl font-serif italic text-blue-900 leading-none">Level {calculateLevel(selectedProfile).level}</span>
+                 {(() => {
+                   const levelData = calculateLevel(selectedProfile);
+                   return (
+                     <div className="w-full mt-6 bg-blue-50/50 p-6 rounded-3xl border border-blue-100 shadow-sm relative overflow-hidden">
+                       <div className="absolute top-0 right-0 p-4 opacity-5">
+                          <Star className="w-12 h-12" />
+                       </div>
+                       <div className="flex justify-between items-center mb-3">
+                         <div className="flex flex-col">
+                           <span className="text-[9px] font-black uppercase tracking-widest text-blue-600/40">Status Level</span>
+                           <span className="text-xl font-serif italic text-blue-900 leading-none">Level {levelData.level}</span>
+                         </div>
+                         <div className="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-600/20">
+                            {levelData.progress}%
+                         </div>
+                       </div>
+                       <div className="h-2.5 w-full bg-blue-100/50 rounded-full overflow-hidden border border-blue-200/50 p-0.5 shadow-inner">
+                         <motion.div 
+                           initial={{ width: 0, shadow: '0 0 0px blue' }}
+                           animate={{ 
+                             width: `${levelData.progress}%`,
+                             boxShadow: '0 0 15px rgba(37,99,235,0.4)'
+                           }}
+                           className="h-full bg-blue-600 rounded-full"
+                         />
+                       </div>
+                       <div className="flex justify-between items-center mt-3 pt-3 border-t border-blue-100/50">
+                         <div className="flex flex-col">
+                            <span className="text-[7px] font-black opacity-30 uppercase tracking-widest">Global Net Worth</span>
+                            <span className="text-[10px] font-mono font-black text-blue-600">${levelData.netWorth.toLocaleString()}</span>
+                         </div>
+                         <Trophy className="w-4 h-4 text-amber-500 opacity-40" />
+                       </div>
                      </div>
-                     <div className="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-600/20">
-                        {calculateLevel(selectedProfile).progress}%
-                     </div>
-                   </div>
-                   <div className="h-2.5 w-full bg-blue-100/50 rounded-full overflow-hidden border border-blue-200/50 p-0.5 shadow-inner">
-                     <motion.div 
-                       initial={{ width: 0, shadow: '0 0 0px blue' }}
-                       animate={{ 
-                         width: `${calculateLevel(selectedProfile).progress}%`,
-                         boxShadow: '0 0 15px rgba(37,99,235,0.4)'
-                       }}
-                       className="h-full bg-blue-600 rounded-full"
-                     />
-                   </div>
-                   <div className="flex justify-between items-center mt-3 pt-3 border-t border-blue-100/50">
-                     <div className="flex flex-col">
-                        <span className="text-[7px] font-black opacity-30 uppercase tracking-widest">Global Net Worth</span>
-                        <span className="text-[10px] font-mono font-black text-blue-600">${calculateLevel(selectedProfile).netWorth.toLocaleString()}</span>
-                     </div>
-                     <Trophy className="w-4 h-4 text-amber-500 opacity-40" />
-                   </div>
-                 </div>
+                   );
+                 })()}
 
                 <div className="grid grid-cols-2 gap-4 w-full mt-10">
                   <div className="bg-gray-50 p-6 rounded-3xl border border-black/[0.03] flex flex-col items-center">
@@ -4419,7 +4435,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
           {/* Market Stats */}
           <span className="flex items-center gap-2 text-blue-600 font-bold">
             <TrendingUp className="w-3 h-3" />
-            TOP TYCOON: {players.sort((a,b) => b.balance - a.balance)[0]?.name || 'N/A'}
+            TOP TYCOON: {[...players].sort((a,b) => (b.balance || 0) - (a.balance || 0))[0]?.name || 'N/A'}
           </span>
           <span className="flex items-center gap-2 text-emerald-600 font-bold">
             <Globe className="w-3 h-3" />
