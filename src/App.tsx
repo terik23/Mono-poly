@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { BOARD_SPACES } from './constants';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -286,10 +286,11 @@ export default function Game() {
   const [memoryCards, setMemoryCards] = useState<{ id: number, emoji: string, flipped: boolean, matched: boolean }[]>([]);
   const [memorySelection, setMemorySelection] = useState<number[]>([]);
 
-  const [missions, setMissions] = useState([
+    const [missions, setMissions] = useState([
     { id: 1, title: "Magnate en Ciernes", description: "Camina 50 casillas", reward: 300, goal: 50, current: 0, completed: false },
     { id: 2, title: "Inversor Arriesgado", description: "Gasta $10,000 en el Casino", reward: 800, goal: 10000, current: 0, completed: false },
     { id: 3, title: "Dueño de Ciudad", description: "Compra 5 propiedades", reward: 1500, goal: 5, current: 0, completed: false },
+    { id: 4, title: "Lobo de Wall Street", description: "Compra 10 acciones", reward: 2000, goal: 10, current: 0, completed: false },
   ]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -321,7 +322,7 @@ export default function Game() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
   const [activeAuction, setActiveAuction] = useState<{ space_id: number; current_bid: number; highest_bidder_id: string | null; highest_bidder_name: string | null; ends_at: number } | null>(null);
-  const [worldEvent, setWorldEvent] = useState<{ type: 'boom' | 'crash' | 'inflation' | 'holiday'; msg: string; intensity: number; ends_at: number } | null>(null);
+  const [worldEvent, setWorldEvent] = useState<{ type: 'boom' | 'crash' | 'inflation' | 'holiday' | 'stonks'; msg: string; intensity: number; ends_at: number } | null>(null);
   
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [transferAmount, setTransferAmount] = useState('');
@@ -455,13 +456,14 @@ export default function Game() {
     if (!currentPlayer || !isJoined) return;
     
     // Only the operator with the highest ID (or any random stable selection) triggers events to avoid multi-triggers
-    const eventTypes: ('boom' | 'crash' | 'inflation' | 'holiday')[] = ['boom', 'crash', 'inflation', 'holiday'];
+    const eventTypes: ('boom' | 'crash' | 'inflation' | 'holiday' | 'stonks')[] = ['boom', 'crash', 'inflation', 'holiday', 'stonks'];
     const type = eventTypes[Math.floor(Math.random() * eventTypes.length)];
     const msgs = {
       boom: "🚀 MARKET BOOM: Precios de propiedades suben 20% temporalmente.",
       crash: "📉 MARKET CRASH: El pánico se apodera de las calles. Precios bajan 30%.",
       inflation: "💸 INFLACIÓN: Las rentas han subido un 15% por decreto económico.",
-      holiday: "🎉 FESTIVAL: Todos reciben $500 por la celebración."
+      holiday: "🎉 FESTIVAL: Todos reciben $500 por la celebración.",
+      stonks: "📈 STONKS: ¡El mercado se dispara! Todas las acciones suben un 25%."
     };
     
     const msg = `[SYSTEM_EVENT]|${type}|${msgs[type]}|${Date.now()}`;
@@ -856,15 +858,23 @@ export default function Game() {
               for (const s of stocks) {
                 if (s.owner_id) continue; // Exclude player companies from random noise
                 
-                const isExtreme = Math.random() < 0.15; 
-                const isCrash = Math.random() < 0.05;
+                const isStonks = worldEvent?.type === 'stonks';
+                const isExtreme = Math.random() < (worldEvent?.type === 'boom' ? 0.3 : 0.15); 
+                const isCrash = Math.random() < (worldEvent?.type === 'crash' ? 0.2 : 0.05);
                 const volatility = isExtreme ? 0.4 : 0.08;
-                const direction = Math.random() < (isCrash ? 0.2 : 0.55) ? 1 : -1;
+                
+                // Stonks event bias towards positive
+                const bias = isStonks ? 0.7 : (worldEvent?.type === 'boom' ? 0.6 : 0.55);
+                const direction = Math.random() < (isCrash ? 0.2 : bias) ? 1 : -1;
                 
                 let currentChange = (direction * Math.random() * volatility);
                 if (isCrash) {
                   currentChange = -(0.3 + Math.random() * 0.4);
                   addToast(`MARKET CRASH: ${s.name} plummets! 📉`, "error");
+                }
+                
+                if (isStonks) {
+                  currentChange = (0.1 + Math.random() * 0.2); // Forced positive
                 }
                 
                 const newPrice = Math.max(2.0, s.price * (1 + currentChange));
@@ -905,6 +915,9 @@ export default function Game() {
     const loanAmount = canAfford ? 0 : (cost * 0.5) * 1.25;
 
     const newAmount = (playerStocks[symbol] || 0) + amount;
+    
+    // Update Quests: Lobo de Wall Street (id: 4)
+    setMissions(prev => prev.map(m => m.id === 4 ? { ...m, current: Math.min(m.goal, m.current + amount) } : m));
     
     // Sync to Supabase
     const { error } = await supabase
@@ -1164,7 +1177,7 @@ export default function Game() {
       setMissions(prev => prev.map(m => m.id === 2 ? { ...m, current: Math.min(m.goal, m.current + amount) } : m));
 
       // 3. Payout Logic - Random percentage from user list
-      const percentageOptions = [10, 20, 30, 50, 60, 70, 80, 100, 200, 300, 500];
+      const percentageOptions = [0, 5, 10, 15, 20, 30, 50, 70, 80, 90, 100, 150];
       const selectedPercentage = percentageOptions[Math.floor(Math.random() * percentageOptions.length)];
       const prize = Math.floor(amount * (selectedPercentage / 100));
       
@@ -1849,13 +1862,13 @@ export default function Game() {
     const taxDeadlineToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 44, 0);
 
     if (view !== 'casino' && isAfterTaxTime && lastTaxDate < taxDeadlineToday) {
-      const taxAmount = Math.floor(balance * 0.20);
+      const taxAmount = Math.floor(balance * 0.30);
       balance -= taxAmount;
-      addToast(`Daily Tax (20%) Applied: -$${taxAmount.toLocaleString()}`, "error");
+      addToast(`Daily Tax (30%) Applied: -$${taxAmount.toLocaleString()}`, "error");
       
       const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
       if (terik) {
-        handleBalanceUpdate(terik.id, taxAmount).catch(console.error);
+        await handleBalanceUpdate(terik.id, taxAmount).catch(console.error);
       }
       
       // Update local state record for this tax application
@@ -1869,9 +1882,14 @@ export default function Game() {
       // Tax for big companies
       const myProps = properties.filter(p => p.owner_id === currentPlayer.id).length;
       if (myProps > 10) {
-        const tax = myProps * 15;
+        const tax = myProps * 25;
         balance -= tax;
         addToast(`Conglomerate Tax: -$${tax}`, "error");
+        
+        const terik = players.find(p => p.name.toUpperCase() === 'TERIK');
+        if (terik) {
+          handleBalanceUpdate(terik.id, tax).catch(console.error);
+        }
       }
     }
 
@@ -1959,9 +1977,17 @@ export default function Game() {
 
         if (canAfford) {
           balance -= rent;
-          setLogs(prev => [`PAID $${rent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
           
-          await handleBalanceUpdate(owner.id, rent);
+          // World Events affect Rent
+          let finalRent = rent;
+          if (worldEvent?.type === 'inflation') {
+             finalRent = Math.floor(rent * 1.15);
+             addToast("INFLACIÓN: Renta sube 15%", "error");
+          }
+
+          setLogs(prev => [`PAID $${finalRent} RENT TO ${owner.name.toUpperCase()}`, ...prev]);
+          
+          await handleBalanceUpdate(owner.id, finalRent);
           
           // Visual feedback for rent
           const rentId = Math.random().toString();
@@ -2011,6 +2037,12 @@ export default function Game() {
     let cost = space.price;
     if (isGoldenActive) {
       cost = Math.floor(cost * 0.5); // 50% discount during golden event
+    }
+
+    if (worldEvent?.type === 'boom') {
+      cost = Math.floor(cost * 1.2);
+    } else if (worldEvent?.type === 'crash') {
+      cost = Math.floor(cost * 0.7);
     }
     
     // Role Benefit: Urbanista
@@ -2825,9 +2857,9 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
 
             {view === 'stocks' && (
               <div className="flex-1 flex flex-col gap-6">
-                <div className="flex justify-between items-center bg-black text-white p-6 rounded-3xl -mx-2 shadow-2xl">
+                <div className="flex justify-between items-center bg-black text-white p-6 rounded-3xl -mx-2 shadow-2xl border-b-4 border-green-500">
                    <div>
-                     <h2 className="text-2xl font-serif italic">Global Markets</h2>
+                     <h2 className="text-2xl font-serif italic text-green-400">Stonks Market</h2>
                      <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-40">Financial District</p>
                    </div>
                    <motion.div
