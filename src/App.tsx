@@ -39,7 +39,8 @@ import {
   Trophy,
   Globe,
   Gavel,
-  Crown
+  Crown,
+  LogOut
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -321,6 +322,8 @@ export default function Game() {
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   
+  const [chatChannel, setChatChannel] = useState<'world' | 'team'>('world');
+  
   const [activeAuction, setActiveAuction] = useState<{ space_id: number; current_bid: number; highest_bidder_id: string | null; highest_bidder_name: string | null; ends_at: number } | null>(null);
   const [worldEvent, setWorldEvent] = useState<{ type: 'boom' | 'crash' | 'inflation' | 'holiday' | 'stonks'; msg: string; intensity: number; ends_at: number } | null>(null);
   
@@ -340,7 +343,15 @@ export default function Game() {
           <span className="text-[10px] font-mono opacity-20 font-black">{idx + 1}</span>
           <div className="w-1 h-6 rounded-full shrink-0" style={{ backgroundColor: p.player_color }} />
           <div className="flex-1">
-            <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
+            <div className="flex items-center gap-2">
+              <div className="text-[10px] font-black text-gray-800 uppercase tracking-tight">{p.name}</div>
+              {currentPlayer?.team_id && p.team_id === currentPlayer.team_id && p.id !== currentPlayer.id && (
+                <span className="text-[7px] bg-emerald-500 text-white px-1.5 py-0.5 rounded-full font-black uppercase tracking-widest flex items-center gap-1">
+                  <Users className="w-2 h-2" />
+                  Team
+                </span>
+              )}
+            </div>
             <div className="text-[9px] font-mono font-bold opacity-30">${(p.balance || 0).toLocaleString()}</div>
           </div>
           {p.id === currentPlayer?.id && (
@@ -794,8 +805,11 @@ export default function Game() {
     if (!currentPlayer) return;
     
     const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.text.startsWith('[SYSTEM_TRANSFER]')) {
-      const [, fromId, toId, amount, fromName] = lastMsg.text.split('|');
+    if (lastMsg && lastMsg.text && lastMsg.text.startsWith('[SYSTEM_TRANSFER]')) {
+      const parts = lastMsg.text.split('|');
+      const toId = parts[2];
+      const amount = parts[3];
+      const fromName = parts[4];
       if (toId === currentPlayer.id) {
         // This is for me!
         const amt = parseInt(amount);
@@ -808,8 +822,10 @@ export default function Game() {
       }
     }
 
-    if (lastMsg && lastMsg.text.startsWith('[TEAM_INVITE]')) {
-      const [, fromId, toId, fromName] = lastMsg.text.split('|');
+    if (lastMsg && lastMsg.text && lastMsg.text.startsWith('[TEAM_INVITE]')) {
+      const parts = lastMsg.text.split('|');
+      const toId = parts[2];
+      const fromName = parts[3];
       if (toId === currentPlayer.id && !currentPlayer.team_id) {
         addToast(`¡${fromName} te invitó a formar equipo!`, "info");
       }
@@ -1555,6 +1571,13 @@ export default function Game() {
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
+        table: 'vaquitas'
+      }, () => {
+        fetchData(gameId);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
         table: 'empresa'
       }, () => {
         fetchData(gameId);
@@ -1761,11 +1784,16 @@ export default function Game() {
     }
   };
 
+  const leaveTeam = async () => {
+    if (!currentPlayer) return;
+    await supabase.from('players').update({ team_id: null }).eq('id', currentPlayer.id);
+    addToast("Has abandonado el equipo", "info");
+    fetchData(gameId);
+  };
   const handleTeamAccept = async (senderId: string) => {
     if (!currentPlayer) return;
     
-    const teamId = senderId; // The inviter's ID becomes the team ID
-    
+    const teamId = senderId;
     // Update inviter
     await supabase.from('players').update({ team_id: teamId }).eq('id', senderId);
     // Update current player
@@ -1814,7 +1842,7 @@ export default function Game() {
 
     await handleBalanceUpdate(currentPlayer.id, -amount);
     
-    await supabase.from('vaquitas').update({
+    const { error } = await supabase.from('vaquitas').update({
        current: newTotal,
        status: isCompleted ? 'completed' : 'active'
     }).eq('id', vaquitaId);
@@ -1822,7 +1850,17 @@ export default function Game() {
     if (isCompleted) {
       addToast(`¡Vaquita "${vaquita.title}" completada! 🎉`, "success");
       confetti({ particleCount: 200, spread: 70 });
-      // Rewards could be added here
+      
+      // Global Reward: Trigger a Mini-Boom or give everyone a bonus
+      const bonus = Math.floor(vaquita.goal * 0.1);
+      setLogs(prev => [`PROYECTO "${vaquita.title.toUpperCase()}" COMPLETADO: +$${bonus} PARA TODOS`, ...prev]);
+      
+      // Update everyone's balance (simplified: the leader could send an event, 
+      // but let's just make it a local message that suggests it's happening)
+      players.forEach(p => {
+         handleBalanceUpdate(p.id, bonus).catch(console.error);
+      });
+
     } else {
       addToast(`Donaste $${amount} a la vaquita`, "success");
     }
@@ -1969,7 +2007,12 @@ export default function Game() {
     if (ownership && ownership.owner_id && ownership.owner_id !== currentPlayer.id) {
       const owner = players.find(p => p.id === ownership.owner_id);
       if (owner) {
-        const rent = space.rent ? space.rent[ownership.buildings] : 20;
+        // TEAM SKIP: Team members don't pay rent to each other
+        if (currentPlayer.team_id && owner.team_id === currentPlayer.team_id) {
+          addToast(`No pagas renta a tu compañero ${owner.name.toUpperCase()} (BENEFICIO DE EQUIPO) 🤝`, "info");
+          setLogs(prev => [`SKIPPED RENT ON ${owner.name.toUpperCase()}'S PROPERTY (TEAM COOPERATIVE)`, ...prev]);
+        } else {
+          const rent = space.rent ? space.rent[ownership.buildings] : 20;
         
         // Loan / Financing logic for Rent
         const canAfford = balance >= rent;
@@ -2159,7 +2202,11 @@ export default function Game() {
     e.preventDefault();
     if (!newMessage.trim() || !currentPlayer) return;
 
-    const messageText = newMessage.trim();
+    let messageText = newMessage.trim();
+    if (chatChannel === 'team' && currentPlayer.team_id) {
+       messageText = `[TEAM]|${currentPlayer.team_id}|${messageText}`;
+    }
+    
     setNewMessage('');
 
     const { error } = await supabase.from('messages').insert({
@@ -3386,11 +3433,13 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                          <div className="text-[10px] text-amber-800 font-bold">Máximo 2 personas por equipo.</div>
                       </div>
 
-                      {messages.filter(m => m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id && !currentPlayer?.team_id).length > 0 && (
+                      {messages.filter(m => m.text && m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id && !currentPlayer?.team_id).length > 0 && (
                         <div className="mt-4 space-y-2">
                            <div className="text-[9px] font-black uppercase tracking-widest text-blue-600">Invitaciones Pendientes</div>
-                           {messages.filter(m => m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id).map(m => {
-                              const [, fromId, , fromName] = m.text.split('|');
+                           {messages.filter(m => m.text && m.text.startsWith('[TEAM_INVITE]') && m.text.split('|')[2] === currentPlayer?.id).map(m => {
+                              const parts = m.text.split('|');
+                              const fromId = parts[1];
+                              const fromName = parts[3];
                               return (
                                 <div key={m.id} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-100 rounded-xl">
                                    <div className="text-[10px] font-bold text-blue-800">{fromName}</div>
@@ -3482,6 +3531,13 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                        className="w-full px-6 py-4 bg-gray-50 border border-black/5 rounded-2xl text-[10px] font-black uppercase tracking-widest focus:ring-2 ring-green-100 outline-none"
                      />
                      <input 
+                       type="text" 
+                       placeholder="DESCRIPCIÓN DEL PROYECTO" 
+                       value={newVaquita.description}
+                       onChange={(e) => setNewVaquita({...newVaquita, description: e.target.value})}
+                       className="w-full px-6 py-4 bg-gray-50 border border-black/5 rounded-2xl text-[10px] font-black uppercase tracking-widest focus:ring-2 ring-green-100 outline-none"
+                     />
+                     <input 
                        type="number" 
                        placeholder="META EN DÓLARES" 
                        value={newVaquita.goal}
@@ -3507,21 +3563,27 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                           </div>
                           <div className={cn(
                             "px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest",
-                            v.status === 'active' ? "bg-green-50 text-green-600 border border-green-100" : "bg-blue-50 text-blue-600 border border-blue-100"
+                            v.status === 'active' ? "bg-green-50 text-green-600 border border-green-100" : "bg-amber-100 text-amber-600 border border-amber-200"
                           )}>
-                            {v.status}
+                            {v.status === 'active' ? '● Activa' : '✓ Finalizada'}
                           </div>
                         </div>
 
+                        {v.description && (
+                           <p className="text-[10px] text-gray-400 italic leading-relaxed border-l-2 border-gray-100 pl-3">
+                              "{v.description}"
+                           </p>
+                        )}
+
                         <div className="space-y-2 flex-1">
                           <div className="flex justify-between text-[10px] font-black font-mono">
-                             <span className="text-green-600">${v.current.toLocaleString()}</span>
-                             <span className="opacity-20">Objetivo: ${v.goal.toLocaleString()}</span>
+                             <span className="text-green-600">${(v.current || 0).toLocaleString()}</span>
+                             <span className="opacity-20">Objetivo: ${(v.goal || 0).toLocaleString()}</span>
                           </div>
                           <div className="h-3 w-full bg-gray-100 rounded-full overflow-hidden shadow-inner p-1">
                              <motion.div 
                                initial={{ width: 0 }}
-                               animate={{ width: `${Math.min(100, (v.current / v.goal) * 100)}%` }}
+                               animate={{ width: `${Math.min(100, ((v.current || 0) / (v.goal || 1)) * 100)}%` }}
                                className="h-full bg-green-500 rounded-full"
                              />
                           </div>
@@ -3529,11 +3591,12 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
 
                         {v.status === 'active' && (
                           <div className="grid grid-cols-2 gap-3">
-                            {[10, 100].map(amt => (
+                            {[50, 100, 1000, 5000].map(amt => (
                                <button 
                                  key={amt}
+                                 disabled={currentPlayer.balance < amt}
                                  onClick={() => donateToVaquita(v.id, amt)}
-                                 className="py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-black transition-all active:scale-95 shadow-lg shadow-black/5"
+                                 className="py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-black transition-all active:scale-95 shadow-lg shadow-black/5 disabled:opacity-30"
                                >
                                  Donar ${amt}
                                </button>
@@ -3982,6 +4045,16 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                   </div>
                 </div>
 
+                {currentPlayer && selectedProfile.id === currentPlayer.id && currentPlayer.team_id && (
+                   <button 
+                    onClick={leaveTeam}
+                    className="w-full py-4 border-2 border-red-100 bg-red-50 text-red-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Abandonar Equipo
+                  </button>
+                )}
+
                 {currentPlayer && selectedProfile.id !== currentPlayer.id && !selectedProfile.team_id && !currentPlayer.team_id && (
                   <button 
                     onClick={() => {
@@ -4150,7 +4223,22 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
             <div className="p-6 border-b border-black/5 bg-gray-50 flex justify-between items-center">
               <div className="flex flex-col">
                 <span className="text-[9px] font-black uppercase tracking-widest opacity-40">Frequency 1</span>
-                <h3 className="text-sm font-black uppercase tracking-tight">World Chat</h3>
+                <div className="flex items-center gap-2">
+                   <button 
+                     onClick={() => setChatChannel('world')}
+                     className={cn("text-[10px] font-black uppercase transition-all px-2 py-1 rounded-md", chatChannel === 'world' ? "bg-black text-white" : "opacity-30")}
+                   >
+                     World
+                   </button>
+                   {currentPlayer?.team_id && (
+                     <button 
+                       onClick={() => setChatChannel('team')}
+                       className={cn("text-[10px] font-black uppercase transition-all px-2 py-1 rounded-md", chatChannel === 'team' ? "bg-emerald-600 text-white" : "opacity-30")}
+                     >
+                       Team
+                     </button>
+                   )}
+                </div>
               </div>
               <button 
                 onClick={() => setShowChat(false)}
@@ -4164,26 +4252,39 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
               ref={chatScrollRef}
               className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar"
             >
-              {messages.map((m, idx) => (
+              {messages.filter(m => {
+                 if (!m.text) return false;
+                 if (m.text.startsWith('[TEAM]|')) {
+                    const parts = m.text.split('|');
+                    const tId = parts[1];
+                    return tId === currentPlayer?.team_id && chatChannel === 'team';
+                 }
+                 return chatChannel === 'world';
+              }).map((m, idx) => (
                 <div key={m.id || idx} className={cn("flex flex-col gap-1", m.player_id === currentPlayer?.id ? "items-end" : "items-start")}>
                   <div className="flex items-center gap-2 px-1">
                     <span className="text-[8px] font-black uppercase tracking-widest opacity-30">{m.player_name || 'Tycoon'}</span>
+                    {m.text && m.text.startsWith('[TEAM]|') && <span className="text-[7px] text-emerald-500 font-black uppercase tracking-widest">TEAM</span>}
                     <span className="text-[7px] opacity-20 font-mono">
                       {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                     </span>
                   </div>
                   <div className={cn(
                     "px-4 py-3 rounded-2xl text-[12px] leading-relaxed max-w-[85%] shadow-sm",
-                    m.player_id === currentPlayer?.id ? "bg-blue-600 text-white rounded-tr-none" : "bg-gray-100 text-gray-800 rounded-tl-none border border-black/5"
+                    m.player_id === currentPlayer?.id ? (m.text && m.text.startsWith('[TEAM]|') ? "bg-emerald-600 text-white rounded-tr-none" : "bg-blue-600 text-white rounded-tr-none") : "bg-gray-100 text-gray-800 rounded-tl-none border border-black/5"
                   )}>
-                    {m.text.startsWith('[SYSTEM_AUCTION_START]') ? (
+                    {m.text && m.text.startsWith('[TEAM]|') ? m.text.split('|').slice(2).join('|') : m.text && m.text.startsWith('[SYSTEM_AUCTION_START]') ? (
                       <div className="flex flex-col gap-2 min-w-[200px]">
                         <div className="flex items-center gap-2 text-amber-600 font-black">
                           <Gavel className="w-4 h-4" />
                           <span>¡SUBASTA ACTIVA!</span>
                         </div>
                         <div className="text-sm font-black uppercase text-gray-900">
-                          {BOARD_SPACES[parseInt(m.text.split('|')[1])].name}
+                          {(() => {
+                            const parts = m.text.split('|');
+                            const idx = parseInt(parts[1]);
+                            return BOARD_SPACES[idx] ? BOARD_SPACES[idx].name : 'Subasta';
+                          })()}
                         </div>
                         <button 
                           onClick={() => setActiveAuction(prev => prev)} // Re-opening state
@@ -4192,10 +4293,10 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                           Ir a la Puja
                         </button>
                       </div>
-                    ) : m.text.startsWith('[SYSTEM_AUCTION_BID]') ? (
+                    ) : m.text && m.text.startsWith('[SYSTEM_AUCTION_BID]') ? (
                       <div className="flex items-center gap-2 text-amber-700 font-bold italic">
                         <TrendingUp className="w-3 h-3" />
-                         Puja actual: ${parseInt(m.text.split('|')[2]).toLocaleString()}
+                         Puja actual: ${parseInt(m.text.split('|')[2] || '0').toLocaleString()}
                       </div>
                     ) : m.text}
                   </div>
@@ -4393,22 +4494,31 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
       </AnimatePresence>
 
       {/* Navigation HUD (Floating at bottom of screen) */}
-      <div className="fixed bottom-6 md:bottom-10 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black/90 backdrop-blur-2xl rounded-3xl p-2 md:p-3 border border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.5)] gap-3 md:gap-6 pointer-events-auto max-md:w-[90%] max-md:justify-center">
-          <div className="flex border-r border-white/10 pr-2 md:pr-4 gap-1 md:gap-2 shrink-0">
-            <button 
-              onClick={() => setZoom(prev => Math.min(2, prev + 0.1))}
-              className="p-2 md:p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
-              title="Zoom In"
-            >
-              <Plus className="w-4 h-4 md:w-5 md:h-5 text-green-400" />
-            </button>
-            <button 
-              onClick={() => setZoom(prev => Math.max(0.1, prev - 0.1))}
-              className="p-2 md:p-3 text-white hover:bg-white/10 rounded-2xl transition-all"
-              title="Zoom Out"
-            >
-                <Minus className="w-4 h-4 md:w-5 md:h-5 text-red-400" />
-            </button>
+      <div className="fixed bottom-12 md:bottom-16 left-1/2 -translate-x-1/2 z-[100] flex items-center bg-black rounded-full p-2 md:p-3 border-4 border-white/10 shadow-[0_30px_90px_rgba(0,0,0,0.8)] gap-3 md:gap-6 pointer-events-auto max-md:w-[95%] max-md:justify-center ring-1 ring-white/20">
+          <div className="flex border-r border-white/10 pr-2 md:pr-4 gap-1 md:gap-2 shrink-0 items-center">
+            <div className="flex bg-white/5 rounded-2xl p-1 gap-1">
+              <button 
+                onClick={() => setZoom(prev => Math.min(2, prev + 0.1))}
+                className="p-2 md:p-3 text-white hover:bg-white/20 rounded-xl transition-all active:scale-95 flex items-center justify-center"
+                title="Zoom In"
+              >
+                <Plus className="w-5 h-5 md:w-6 md:h-6 text-emerald-400 stroke-[3px]" />
+              </button>
+              <div className="w-[1px] h-4 bg-white/10 self-center" />
+              <button 
+                onClick={() => setZoom(prev => Math.max(0.1, prev - 0.1))}
+                className="p-2 md:p-3 text-white hover:bg-white/20 rounded-xl transition-all active:scale-95 flex items-center justify-center"
+                title="Zoom Out"
+              >
+                  <Minus className="w-5 h-5 md:w-6 md:h-6 text-rose-400 stroke-[3px]" />
+              </button>
+            </div>
+            
+            <div className="hidden lg:flex flex-col items-center justify-center px-2">
+               <span className="text-[10px] font-mono text-white/40 font-black leading-none">{Math.round(zoom * 100)}%</span>
+               <span className="text-[6px] text-white/20 uppercase font-black tracking-tighter">Zoom</span>
+            </div>
+
             <button 
               onClick={() => setIsFollowing(!isFollowing)}
               className={cn(
@@ -4438,6 +4548,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
               { id: 'transfer', icon: ArrowRightLeft, label: 'Trade' },
               { id: 'missions', icon: Trophy, label: 'Quests' },
               { id: 'comunidad', icon: Users, label: 'Comunidad' },
+              { id: 'vaquitas', icon: Heart, label: 'Vaquitas' },
               { id: 'stats', icon: Trophy, label: 'Ranking' },
               { id: 'chat_history', icon: Send, label: 'Chat Log' }
             ].map(v => (
@@ -4493,4 +4604,5 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
       </footer>
     </div>
   );
+}
 }
