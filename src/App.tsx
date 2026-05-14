@@ -161,7 +161,7 @@ const AIRPLANE_STYLES = [
 ];
 
 const PlayerToken = ({ player, size = 'md', className }: { player: any, size?: 'xs' | 'sm' | 'md' | 'lg', className?: string }) => {
-  const style = 'default';
+  const style = player.airplane_style || 'default';
   const color = player.player_color;
   
   const sizeClasses = {
@@ -386,9 +386,9 @@ export default function Game() {
       });
       addToast(msg, "info");
 
-      // Apply Holiday Reward: $50 to EVERYONE
+      // Apply Holiday Reward: $500 to EVERYONE
       if (type === 'holiday' && currentPlayer) {
-         handleBalanceUpdate(currentPlayer.id, 50).catch(console.error);
+         handleBalanceUpdate(currentPlayer.id, 500).catch(console.error);
       }
     }
   }, []);
@@ -461,7 +461,7 @@ export default function Game() {
       boom: "🚀 MARKET BOOM: Precios de propiedades suben 20% temporalmente.",
       crash: "📉 MARKET CRASH: El pánico se apodera de las calles. Precios bajan 30%.",
       inflation: "💸 INFLACIÓN: Las rentas han subido un 15% por decreto económico.",
-      holiday: "🎉 FESTIVAL: Todos reciben $50 por la celebración."
+      holiday: "🎉 FESTIVAL: Todos reciben $500 por la celebración."
     };
     
     const msg = `[SYSTEM_EVENT]|${type}|${msgs[type]}|${Date.now()}`;
@@ -485,15 +485,21 @@ export default function Game() {
     }
   }, [activeAuction, endAuction]);
 
+  const isLeader = useMemo(() => {
+    if (!currentPlayer || players.length === 0) return false;
+    const sortedPlayers = [...players].sort((a,b) => a.id.localeCompare(b.id));
+    return sortedPlayers[0].id === currentPlayer.id;
+  }, [players, currentPlayer?.id]);
+
   useEffect(() => {
-    // Check for random events every 3 minutes
+    // Check for random events every 3 minutes - ONLY THE LEADER TRIGGERS
     const interval = setInterval(() => {
-      if (Math.random() > 0.7) { // 30% chance every check
+      if (isLeader && Math.random() > 0.7) { // 30% chance every check
         triggerRandomEvent();
       }
     }, 180000);
     return () => clearInterval(interval);
-  }, [triggerRandomEvent]);
+  }, [triggerRandomEvent, isLeader]);
 
   const updatePlayerColor = async (playerId: string, color: string) => {
     const { error } = await supabase
@@ -2111,10 +2117,10 @@ export default function Game() {
         player_name: 'Tycoon System',
         text: `[SYSTEM_TRANSFER]|${currentPlayer.id}|${toPlayerId}|${amount}|${currentPlayer.name}`,
       });
-    }
 
-    addToast(`Transferred $${amount} to ${target?.name}`, "success");
-    setLogs(prev => [`TRANSFERRED $${amount} TO ${target?.name.toUpperCase()}`, ...prev]);
+      addToast(`Transferred $${amount} to ${target.name}`, "success");
+      setLogs(prev => [`TRANSFERRED $${amount} TO ${target.name.toUpperCase()}`, ...prev]);
+    }
   };
 
   const sendMessage = async (e: React.FormEvent) => {
@@ -2888,6 +2894,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                     const myShares = playerStocks[s.symbol] || 0;
                     const stockHistory = (s.history && s.history.length > 0) ? s.history : [{time: '0', price: price}];
 
+                    const stockId = s.symbol.replace(/\s+/g, '-');
                     return (
                       <div key={s.symbol} className="bg-white border border-black/5 p-6 rounded-[2rem] shadow-sm hover:shadow-md transition-all group overflow-hidden">
                         <div className="flex justify-between items-start mb-6">
@@ -2929,7 +2936,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                            <ResponsiveContainer width="100%" height="100%">
                              <AreaChart data={stockHistory}>
                                <defs>
-                                 <linearGradient id={`priceGrad-${s.symbol}`} x1="0" y1="0" x2="0" y2="1">
+                                 <linearGradient id={`priceGrad-${stockId}`} x1="0" y1="0" x2="0" y2="1">
                                    <stop offset="5%" stopColor={s.change >= 0 ? "#16a34a" : "#dc2626"} stopOpacity={0.1}/>
                                    <stop offset="95%" stopColor={s.change >= 0 ? "#16a34a" : "#dc2626"} stopOpacity={0}/>
                                  </linearGradient>
@@ -2940,7 +2947,7 @@ CREATE PUBLICATION supabase_realtime FOR TABLE messages, players, bank, vaquitas
                                  stroke={s.change >= 0 ? "#16a34a" : "#dc2626"} 
                                  strokeWidth={2}
                                  fillOpacity={1} 
-                                 fill={`url(#priceGrad-${s.symbol})`} 
+                                 fill={`url(#priceGrad-${stockId})`} 
                                />
                              </AreaChart>
                            </ResponsiveContainer>
